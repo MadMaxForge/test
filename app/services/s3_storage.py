@@ -13,7 +13,12 @@ def _get_s3_client():
         endpoint_url=os.getenv("S3_ENDPOINT_URL", "https://s3api-eur-no-1.runpod.io"),
         aws_access_key_id=os.getenv("S3_ACCESS_KEY", ""),
         aws_secret_access_key=os.getenv("S3_SECRET_KEY", ""),
-        config=Config(signature_version="s3v4"),
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 5, "mode": "adaptive"},
+            connect_timeout=30,
+            read_timeout=60,
+        ),
         region_name="eur-no-1",
     )
 
