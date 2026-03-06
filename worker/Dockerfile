@@ -7,7 +7,7 @@ FROM runpod/worker-comfyui:5.7.1-base
 WORKDIR /comfyui/custom_nodes
 
 # 1. ComfyUI-WanVideoWrapper (kijai) - MultiTalkModelLoader, WanVideoSampler,
-#    WanVideoDecode, WanVideoModelLoader, AudioSeparation, etc.
+#    WanVideoDecode, WanVideoModelLoader, etc.
 RUN git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git && \
     cd ComfyUI-WanVideoWrapper && \
     pip install -r requirements.txt --no-cache-dir
@@ -21,6 +21,16 @@ RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git && \
 RUN git clone https://github.com/kijai/ComfyUI-KJNodes.git && \
     cd ComfyUI-KJNodes && \
     pip install -r requirements.txt --no-cache-dir
+
+# 4. audio-separation-nodes-comfyui (christian-byrne) - AudioSeparation
+RUN git clone https://github.com/christian-byrne/audio-separation-nodes-comfyui.git && \
+    cd audio-separation-nodes-comfyui && \
+    pip install -r requirements.txt --no-cache-dir
+
+# 5. ComfyUI-AudioScheduler (a1lazydog) - AudioToAudioData, AudioToFFTs
+RUN git clone https://github.com/a1lazydog/ComfyUI-AudioScheduler.git && \
+    cd ComfyUI-AudioScheduler && \
+    ([ -f requirements.txt ] && pip install -r requirements.txt --no-cache-dir || true)
 
 # Go back to root
 WORKDIR /

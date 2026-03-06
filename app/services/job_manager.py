@@ -468,15 +468,6 @@ _WAN21_WORKFLOW_TEMPLATE: dict = {
         "class_type": "GetImageSizeAndCount",
         "_meta": {"title": "Get Image Size & Count"},
     },
-    "293": {
-        "inputs": {
-            "preview": "357",
-            "previewMode": None,
-            "source": ["194", 2],
-        },
-        "class_type": "PreviewAny",
-        "_meta": {"title": "Preview Any"},
-    },
     "305": {
         "inputs": {"audio": ["125", 0]},
         "class_type": "AudioToAudioData",
