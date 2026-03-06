@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import uuid
 import base64
 from datetime import datetime, timezone
@@ -7,6 +8,11 @@ from typing import Optional
 
 from app.models.schemas import JobStatus, JobResponse
 from app.services import elevenlabs, s3_storage, runpod_api
+
+# Path prefix on the Network Volume where ComfyUI's input directory lives.
+# The ashleykleynhans worker mounts /runpod-volume and runs ComfyUI from there.
+# S3 key = this prefix + "/input/" + filename
+COMFYUI_INPUT_PREFIX = os.getenv("COMFYUI_INPUT_PREFIX", "runpod-slim/ComfyUI/input")
 
 
 # In-memory job store (for MVP; can migrate to SQLite later)
@@ -77,24 +83,29 @@ async def generate_video(
         try:
             update_job(job_id, status=JobStatus.GENERATING_VIDEO)
 
-            # Encode audio and image as base64 for ComfyUI input directory
-            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
             # Build the WAN 2.1 InfiniteTalk workflow with dynamic filenames
             audio_input_name = f"audio_{job_id}.mp3"
             image_input_name = f"image_{job_id}.png"
-            workflow = _build_lipsync_workflow(audio_input_name, image_input_name)
 
-            # Upload files to ComfyUI input directory via worker's images array
-            input_files = [
-                {"name": image_input_name, "image": image_b64},
-                {"name": audio_input_name, "image": audio_b64},
-            ]
+            # Upload audio and image to Network Volume's ComfyUI input directory
+            # ashleykleynhans worker runs ComfyUI from /runpod-volume/ComfyUI/
+            # so files need to be at ComfyUI/input/ on the volume
+            comfyui_input_prefix = COMFYUI_INPUT_PREFIX
+            s3_storage.upload_file(
+                audio_bytes,
+                f"{comfyui_input_prefix}/{audio_input_name}",
+                "audio/mpeg",
+            )
+            s3_storage.upload_file(
+                image_bytes,
+                f"{comfyui_input_prefix}/{image_input_name}",
+                image_content_type,
+            )
+
+            workflow = _build_lipsync_workflow(audio_input_name, image_input_name)
 
             result = await runpod_api.submit_comfyui_job(
                 workflow=workflow,
-                files=input_files,
             )
 
             runpod_job_id = result.get("id")
@@ -124,7 +135,7 @@ async def poll_runpod_status(job_id: str) -> Optional[str]:
 
         if status == "COMPLETED":
             output = result.get("output", {})
-            video_url = _extract_video_url(output)
+            video_url = _extract_video_url(output, job_id=job_id)
             update_job(job_id, status=JobStatus.COMPLETED, video_url=video_url)
             return video_url
 
@@ -145,40 +156,51 @@ def create_job_entry(text: str, voice_id: Optional[str] = None) -> str:
     return _create_job(text, voice_id)
 
 
-def _extract_video_url(output: object) -> Optional[str]:
-    """Extract video/image URL from RunPod worker-comfyui output.
+def _extract_video_url(output: object, job_id: str = "") -> Optional[str]:
+    """Extract video URL from RunPod worker output.
     
-    worker-comfyui v5+ returns:
-    {"images": [{"filename": "...", "type": "s3_url"|"base64", "data": "..."}]}
+    ashleykleynhans/runpod-worker-comfyui returns:
+    {"images": ["<base64_data>", ...]}
     
-    Older versions may return:
-    {"message": "url"} or a plain string.
+    Each entry is a base64-encoded file from ComfyUI's output directory.
+    We decode the base64 data, upload to S3, and return a presigned URL.
+    
+    Also handles official worker-comfyui v5+ format:
+    {"images": [{"filename": "...", "type": "s3_url", "data": "..."}]}
     """
     if isinstance(output, str):
         return output
     if not isinstance(output, dict):
         return None
 
-    # v5+ format: look for video/image files in images array
     images_list = output.get("images", [])
-    if isinstance(images_list, list):
-        for item in images_list:
-            if not isinstance(item, dict):
-                continue
-            data = item.get("data", "")
-            item_type = item.get("type", "")
-            filename = item.get("filename", "")
-            # Prefer video files
-            if filename.endswith((".mp4", ".webm", ".avi", ".mov")):
-                if item_type == "s3_url":
+    if isinstance(images_list, list) and len(images_list) > 0:
+        first_item = images_list[0]
+
+        # ashleykleynhans format: list of base64 strings
+        if isinstance(first_item, str):
+            try:
+                video_bytes = base64.b64decode(first_item)
+                video_key = f"jobs/{job_id}/output_video.mp4" if job_id else f"jobs/unknown/output_video.mp4"
+                s3_storage.upload_file(video_bytes, video_key, "video/mp4")
+                return s3_storage.generate_presigned_url(video_key, expiration=86400)
+            except Exception:
+                # If decode/upload fails, return raw data reference
+                return None
+
+        # Official worker-comfyui v5+ format: list of dicts
+        if isinstance(first_item, dict):
+            for item in images_list:
+                if not isinstance(item, dict):
+                    continue
+                data = item.get("data", "")
+                item_type = item.get("type", "")
+                if item_type == "s3_url" and data:
                     return str(data)
-            # Fall back to any s3_url
-            if item_type == "s3_url" and data:
-                return str(data)
-        # If no s3_url, check for base64 (less ideal for video)
-        for item in images_list:
-            if isinstance(item, dict) and item.get("data"):
-                return str(item["data"])
+            # Fallback: any dict with data
+            for item in images_list:
+                if isinstance(item, dict) and item.get("data"):
+                    return str(item["data"])
 
     # Legacy format
     return output.get("video_url") or output.get("message")
