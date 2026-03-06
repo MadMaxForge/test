@@ -49,6 +49,7 @@ async def generate_video(
     image_filename: str,
     voice_id: Optional[str] = None,
     model_id: str = "eleven_multilingual_v2",
+    image_content_type: str = "image/jpeg",
 ) -> None:
     """Full pipeline: text -> TTS -> upload -> RunPod ComfyUI -> video.
     
@@ -65,43 +66,45 @@ async def generate_video(
         image_key = f"jobs/{job_id}/{image_filename}"
 
         audio_url = s3_storage.upload_file(audio_bytes, audio_key, "audio/mpeg")
-        image_url = s3_storage.upload_file(image_bytes, image_key, "image/jpeg")
+        image_url = s3_storage.upload_file(image_bytes, image_key, image_content_type)
 
         update_job(job_id, audio_url=audio_url)
 
         # Step 3: Submit ComfyUI workflow to RunPod
-        update_job(job_id, status=JobStatus.GENERATING_VIDEO)
+        try:
+            update_job(job_id, status=JobStatus.GENERATING_VIDEO)
 
-        # Encode audio and image as base64 for ComfyUI input directory
-        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            # Encode audio and image as base64 for ComfyUI input directory
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Build the WAN 2.1 InfiniteTalk workflow with dynamic filenames
-        audio_input_name = f"audio_{job_id}.mp3"
-        image_input_name = f"image_{job_id}.png"
-        workflow = _build_lipsync_workflow(audio_input_name, image_input_name)
+            # Build the WAN 2.1 InfiniteTalk workflow with dynamic filenames
+            audio_input_name = f"audio_{job_id}.mp3"
+            image_input_name = f"image_{job_id}.png"
+            workflow = _build_lipsync_workflow(audio_input_name, image_input_name)
 
-        # Upload files to ComfyUI input directory via worker's images array
-        input_files = [
-            {"name": image_input_name, "image": image_b64},
-            {"name": audio_input_name, "image": audio_b64},
-        ]
+            # Upload files to ComfyUI input directory via worker's images array
+            input_files = [
+                {"name": image_input_name, "image": image_b64},
+                {"name": audio_input_name, "image": audio_b64},
+            ]
 
-        result = await runpod_api.submit_comfyui_job(
-            workflow=workflow,
-            files=input_files,
-        )
+            result = await runpod_api.submit_comfyui_job(
+                workflow=workflow,
+                files=input_files,
+            )
 
-        runpod_job_id = result.get("id")
-        update_job(job_id, runpod_job_id=runpod_job_id)
+            runpod_job_id = result.get("id")
+            update_job(job_id, runpod_job_id=runpod_job_id)
 
-    except ValueError as e:
-        # RunPod endpoint not configured — store audio result only
-        update_job(
-            job_id,
-            status=JobStatus.COMPLETED,
-            error=f"Video generation skipped: {e}. Audio was generated successfully.",
-        )
+        except ValueError as e:
+            # RunPod endpoint not configured — audio was generated, skip video
+            update_job(
+                job_id,
+                status=JobStatus.COMPLETED,
+                error=f"Video generation skipped: {e}. Audio was generated successfully.",
+            )
+
     except Exception as e:
         update_job(job_id, status=JobStatus.FAILED, error=str(e))
 
