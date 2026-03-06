@@ -1,10 +1,28 @@
-# Custom worker-comfyui that loads custom_nodes from Network Volume
-# Based on official RunPod worker-comfyui with added symlink logic
-FROM runpod/worker-comfyui:5.5.1-base
+# Custom RunPod ComfyUI worker with WAN 2.1 InfiniteTalk custom nodes
+# Based on official RunPod worker-comfyui (latest stable)
+FROM runpod/worker-comfyui:5.7.1-base
 
-# Copy our custom start script that symlinks custom_nodes from Network Volume
-COPY start.sh /custom-start.sh
-RUN chmod +x /custom-start.sh
+# Install custom nodes required for WAN 2.1 InfiniteTalk workflow
+WORKDIR /comfyui/custom_nodes
 
-# Override the default CMD to use our custom start script
-CMD ["/custom-start.sh"]
+# 1. ComfyUI-WanVideoWrapper (kijai) - MultiTalkModelLoader, WanVideoSampler,
+#    WanVideoDecode, WanVideoModelLoader, AudioSeparation, etc.
+RUN git clone https://github.com/kijai/ComfyUI-WanVideoWrapper.git && \
+    cd ComfyUI-WanVideoWrapper && \
+    pip install -r requirements.txt --no-cache-dir
+
+# 2. ComfyUI-VideoHelperSuite (Kosinkadink) - VHS_VideoCombine
+RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git && \
+    cd ComfyUI-VideoHelperSuite && \
+    pip install -r requirements.txt --no-cache-dir
+
+# 3. ComfyUI-KJNodes (kijai) - ImageResizeKJv2, GetImageSizeAndCount, INTConstant
+RUN git clone https://github.com/kijai/ComfyUI-KJNodes.git && \
+    cd ComfyUI-KJNodes && \
+    pip install -r requirements.txt --no-cache-dir
+
+# Go back to root
+WORKDIR /
+
+# Use the default start script from the official worker
+CMD ["/start.sh"]

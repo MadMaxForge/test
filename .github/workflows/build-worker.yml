@@ -6,6 +6,7 @@ on:
       - 'worker/**'
     branches:
       - main
+      - 'devin/**'
   workflow_dispatch:
 
 env:
