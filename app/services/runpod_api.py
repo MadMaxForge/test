@@ -22,37 +22,31 @@ def _get_endpoint_id() -> str:
 
 async def submit_comfyui_job(
     workflow: dict,
-    files: list[dict] | None = None,
+    images: list[dict] | None = None,
 ) -> dict:
     """Submit a ComfyUI workflow to RunPod serverless endpoint.
     
-    Uses ashleykleynhans/runpod-worker-comfyui format:
-    {"input": {"workflow": "custom", "payload": {workflow_json}}}
+    Uses official runpod-workers/worker-comfyui format:
+    {"input": {"workflow": {workflow_json}, "images": [{"name": ..., "image": ...}]}}
     
-    Files are embedded as __files__ inside the payload dict so they
-    survive the worker's input validation (which only allows 'workflow'
-    and 'payload' keys). A patched handler on the worker extracts
-    __files__ from the payload and saves them to ComfyUI's input
-    directory before processing the workflow.
+    Images (and other files like audio) are uploaded via the worker's
+    built-in upload_images() function, which POSTs them to ComfyUI's
+    /upload/image endpoint before queuing the workflow.
     
     Args:
         workflow: ComfyUI workflow JSON (API format)
-        files: Optional list of {"name": str, "data": str (base64)} dicts
+        images: Optional list of {"name": str, "image": str (base64)} dicts
     
     Returns:
         dict with 'id' (job id) and 'status'
     """
     endpoint_id = _get_endpoint_id()
 
-    # Embed files inside workflow payload so they pass the worker's
-    # input validator (only 'workflow' and 'payload' are accepted).
-    if files:
-        workflow["__files__"] = files
-
     input_data: dict = {
-        "workflow": "custom",
-        "payload": workflow,
+        "workflow": workflow,
     }
+    if images:
+        input_data["images"] = images
 
     payload: dict = {"input": input_data}
 

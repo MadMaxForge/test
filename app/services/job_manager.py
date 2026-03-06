@@ -87,17 +87,17 @@ async def generate_video(
             audio_input_name = f"audio_{job_id}.mp3"
             image_input_name = f"image_{job_id}.png"
 
-            # Send audio and image as base64 in the RunPod payload.
-            # The worker's patched handler saves them to ComfyUI's input
-            # directory before processing the workflow.
-            files = [
+            # Send audio and image as base64 via the official worker's
+            # built-in images upload. The worker POSTs each file to
+            # ComfyUI's /upload/image endpoint before queuing the workflow.
+            images = [
                 {
                     "name": audio_input_name,
-                    "data": base64.b64encode(audio_bytes).decode(),
+                    "image": base64.b64encode(audio_bytes).decode(),
                 },
                 {
                     "name": image_input_name,
-                    "data": base64.b64encode(image_bytes).decode(),
+                    "image": base64.b64encode(image_bytes).decode(),
                 },
             ]
 
@@ -105,7 +105,7 @@ async def generate_video(
 
             result = await runpod_api.submit_comfyui_job(
                 workflow=workflow,
-                files=files,
+                images=images,
             )
 
             runpod_job_id = result.get("id")
