@@ -35,5 +35,8 @@ RUN git clone https://github.com/a1lazydog/ComfyUI-AudioScheduler.git && \
 # Go back to root
 WORKDIR /
 
-# Use the default start script from the official worker
-CMD ["/start.sh"]
+# Custom entrypoint: symlink Network Volume models before starting ComfyUI
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
