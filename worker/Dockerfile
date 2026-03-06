@@ -1,5 +1,6 @@
 # Custom RunPod ComfyUI worker with WAN 2.1 InfiniteTalk custom nodes
 # Based on official RunPod worker-comfyui (latest stable)
+# Build trigger: endpoint exz6k77qinnio4
 FROM runpod/worker-comfyui:5.7.1-base
 
 # Install custom nodes required for WAN 2.1 InfiniteTalk workflow
