@@ -27,11 +27,13 @@ async def submit_comfyui_job(
     """Submit a ComfyUI workflow to RunPod serverless endpoint.
     
     Uses ashleykleynhans/runpod-worker-comfyui format:
-    {"input": {"workflow": "custom", "payload": {workflow_json}, "files": [...]}}
+    {"input": {"workflow": "custom", "payload": {workflow_json}}}
     
-    Files are sent as base64-encoded data in the payload. The worker's
-    patched handler saves them to ComfyUI's input directory before
-    processing the workflow.
+    Files are embedded as __files__ inside the payload dict so they
+    survive the worker's input validation (which only allows 'workflow'
+    and 'payload' keys). A patched handler on the worker extracts
+    __files__ from the payload and saves them to ComfyUI's input
+    directory before processing the workflow.
     
     Args:
         workflow: ComfyUI workflow JSON (API format)
@@ -41,12 +43,16 @@ async def submit_comfyui_job(
         dict with 'id' (job id) and 'status'
     """
     endpoint_id = _get_endpoint_id()
+
+    # Embed files inside workflow payload so they pass the worker's
+    # input validator (only 'workflow' and 'payload' are accepted).
+    if files:
+        workflow["__files__"] = files
+
     input_data: dict = {
         "workflow": "custom",
         "payload": workflow,
     }
-    if files:
-        input_data["files"] = files
 
     payload: dict = {"input": input_data}
 
