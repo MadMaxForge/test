@@ -22,21 +22,22 @@ def _get_endpoint_id() -> str:
 
 async def submit_comfyui_job(
     workflow: dict,
-    images: Optional[dict] = None,
+    files: Optional[list] = None,
 ) -> dict:
     """Submit a ComfyUI workflow to RunPod serverless endpoint.
     
     Args:
         workflow: ComfyUI workflow JSON (API format)
-        images: Optional dict of image name -> base64 encoded image data
+        files: Optional list of dicts with 'name' and 'image' (base64 data)
+               Used for uploading input files (images, audio) to ComfyUI input dir.
     
     Returns:
         dict with 'id' (job id) and 'status'
     """
     endpoint_id = _get_endpoint_id()
-    payload = {"input": {"workflow": workflow}}
-    if images:
-        payload["input"]["images"] = images
+    payload: dict = {"input": {"workflow": workflow}}
+    if files:
+        payload["input"]["images"] = files
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
