@@ -22,30 +22,35 @@ def _get_endpoint_id() -> str:
 
 async def submit_comfyui_job(
     workflow: dict,
+    files: list[dict] | None = None,
 ) -> dict:
     """Submit a ComfyUI workflow to RunPod serverless endpoint.
     
     Uses ashleykleynhans/runpod-worker-comfyui format:
-    {"input": {"workflow": "custom", "payload": {workflow_json}}}
+    {"input": {"workflow": "custom", "payload": {workflow_json}, "files": [...]}}
     
-    Files (audio, images) must already be uploaded to the Network Volume
-    at the correct ComfyUI input path before calling this.
+    Files are sent as base64-encoded data in the payload. The worker's
+    patched handler saves them to ComfyUI's input directory before
+    processing the workflow.
     
     Args:
         workflow: ComfyUI workflow JSON (API format)
+        files: Optional list of {"name": str, "data": str (base64)} dicts
     
     Returns:
         dict with 'id' (job id) and 'status'
     """
     endpoint_id = _get_endpoint_id()
-    payload: dict = {
-        "input": {
-            "workflow": "custom",
-            "payload": workflow,
-        }
+    input_data: dict = {
+        "workflow": "custom",
+        "payload": workflow,
     }
+    if files:
+        input_data["files"] = files
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    payload: dict = {"input": input_data}
+
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"{RUNPOD_BASE_URL}/{endpoint_id}/run",
             headers={

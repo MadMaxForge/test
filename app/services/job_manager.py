@@ -87,25 +87,25 @@ async def generate_video(
             audio_input_name = f"audio_{job_id}.mp3"
             image_input_name = f"image_{job_id}.png"
 
-            # Upload audio and image to Network Volume's ComfyUI input directory
-            # ashleykleynhans worker runs ComfyUI from /runpod-volume/ComfyUI/
-            # so files need to be at ComfyUI/input/ on the volume
-            comfyui_input_prefix = COMFYUI_INPUT_PREFIX
-            s3_storage.upload_file(
-                audio_bytes,
-                f"{comfyui_input_prefix}/{audio_input_name}",
-                "audio/mpeg",
-            )
-            s3_storage.upload_file(
-                image_bytes,
-                f"{comfyui_input_prefix}/{image_input_name}",
-                image_content_type,
-            )
+            # Send audio and image as base64 in the RunPod payload.
+            # The worker's patched handler saves them to ComfyUI's input
+            # directory before processing the workflow.
+            files = [
+                {
+                    "name": audio_input_name,
+                    "data": base64.b64encode(audio_bytes).decode(),
+                },
+                {
+                    "name": image_input_name,
+                    "data": base64.b64encode(image_bytes).decode(),
+                },
+            ]
 
             workflow = _build_lipsync_workflow(audio_input_name, image_input_name)
 
             result = await runpod_api.submit_comfyui_job(
                 workflow=workflow,
+                files=files,
             )
 
             runpod_job_id = result.get("id")
