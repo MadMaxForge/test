@@ -3,6 +3,10 @@
 # Build trigger: endpoint exz6k77qinnio4
 FROM runpod/worker-comfyui:5.7.1-base
 
+# Install aria2 for fast multi-threaded model downloads with resume support
+RUN apt-get update && apt-get install -y --no-install-recommends aria2 && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install custom nodes required for WAN 2.1 InfiniteTalk workflow
 WORKDIR /comfyui/custom_nodes
 
