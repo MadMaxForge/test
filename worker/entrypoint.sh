@@ -5,12 +5,13 @@
 # 3. Starts ComfyUI worker
 #
 # Uses aria2c for fast multi-threaded downloads with auto-resume
-
-set -e
+# NOTE: No "set -e" — individual download failures are handled gracefully
+# so subsequent downloads and worker startup are not blocked.
 
 VOLUME_ROOT="/runpod-volume"
 VOLUME_MODELS="$VOLUME_ROOT/models"
 COMFYUI_MODELS="/comfyui/models"
+DOWNLOAD_ERRORS=0
 
 # ============================================================
 # Helper: download a model file if missing or incomplete
@@ -43,71 +44,89 @@ download_model() {
         echo "[entrypoint] Downloaded $filename ($(stat -c%s "$dest_path" | numfmt --to=iec))"
     else
         echo "[entrypoint] WARNING: $filename download may have failed!"
+        DOWNLOAD_ERRORS=$((DOWNLOAD_ERRORS + 1))
     fi
 }
 
 # ============================================================
 # Step 1: Download all required models to Network Volume
+# Model names MUST match exactly what the ComfyUI workflow expects.
 # ============================================================
 if [ -d "$VOLUME_ROOT" ]; then
     echo "[entrypoint] Network Volume found at $VOLUME_ROOT"
     echo "[entrypoint] Checking and downloading models..."
 
-    # --- diffusion_models (~20.6 GB total) ---
+    # --- diffusion_models ---
     DIFF_DIR="$VOLUME_MODELS/diffusion_models"
 
+    # WAN 2.1 I2V 14B base model (GGUF Q8, ~16 GB)
     download_model \
         "https://huggingface.co/city96/Wan2.1-I2V-14B-480P-gguf/resolve/main/wan2.1-i2v-14b-480p-Q8_0.gguf" \
-        "$DIFF_DIR" "wan2.1-i2v-14b-480p-Q8_0.gguf" 18000000000
+        "$DIFF_DIR" "wan2.1-i2v-14b-480p-Q8_0.gguf" 15000000000
 
+    # InfiniteTalk Single Q8 GGUF (~2.65 GB)
+    # Source: Kijai/WanVideo_comfy_GGUF (public, apache-2.0)
     download_model \
-        "https://huggingface.co/kijai/WAN2.1-InfiniteTalk-GGUF/resolve/main/Wan2_1-InfiniteTalk_Single_Q8.gguf" \
+        "https://huggingface.co/Kijai/WanVideo_comfy_GGUF/resolve/main/InfiniteTalk/Wan2_1-InfiniteTalk_Single_Q8.gguf" \
         "$DIFF_DIR" "Wan2_1-InfiniteTalk_Single_Q8.gguf" 2600000000
 
-    # --- text_encoders (~11 GB) ---
+    # --- text_encoders ---
     TE_DIR="$VOLUME_MODELS/text_encoders"
 
+    # UMT5-XXL bf16 text encoder (~4.7 GB)
+    # Workflow node 241 expects: "umt5-xxl-enc-bf16.safetensors"
     download_model \
-        "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/umt5_xxl_fp8_e4m3fn.safetensors" \
-        "$TE_DIR" "umt5_xxl_fp8_e4m3fn.safetensors" 11000000000
+        "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/umt5-xxl-enc-bf16.safetensors" \
+        "$TE_DIR" "umt5-xxl-enc-bf16.safetensors" 4000000000
 
-    # --- clip_vision (~1.3 GB) ---
+    # --- clip_vision ---
     CV_DIR="$VOLUME_MODELS/clip_vision"
 
+    # CLIP Vision H (~1.8 GB)
     download_model \
         "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors" \
-        "$CV_DIR" "clip_vision_h.safetensors" 1300000000
+        "$CV_DIR" "clip_vision_h.safetensors" 1200000000
 
-    # --- vae (~250 MB) ---
+    # --- vae ---
     VAE_DIR="$VOLUME_MODELS/vae"
 
+    # WAN 2.1 VAE bf16 (~480 MB)
+    # Workflow node 129 expects: "Wan2_1_VAE_bf16.safetensors"
     download_model \
-        "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors" \
-        "$VAE_DIR" "wan_2.1_vae.safetensors" 200000000
+        "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors" \
+        "$VAE_DIR" "Wan2_1_VAE_bf16.safetensors" 400000000
 
-    # --- loras (~740 MB) ---
+    # --- loras ---
     LORA_DIR="$VOLUME_MODELS/loras"
 
+    # LightX2V I2V 14B distillation LoRA rank64 (~738 MB)
+    # Workflow node 138 expects: "Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors"
+    # Source file has different name, so we download with -o to rename it.
     download_model \
-        "https://huggingface.co/kijai/WAN2.1-InfiniteTalk-GGUF/resolve/main/Wan21_InfiniTalk_LoRA.safetensors" \
-        "$LORA_DIR" "Wan21_InfiniTalk_LoRA.safetensors" 700000000
+        "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors" \
+        "$LORA_DIR" "Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors" 700000000
 
-    # --- transformers/wav2vec2-base-960h (~360 MB) ---
-    W2V_DIR="$VOLUME_MODELS/transformers/wav2vec2-base-960h"
+    # --- wav2vec (TencentGameMate/chinese-wav2vec2-base) ---
+    # The DownloadAndLoadWav2VecModel node auto-downloads from HuggingFace
+    # at runtime, but we pre-cache it to avoid cold-start delay.
+    W2V_DIR="$VOLUME_MODELS/transformers/TencentGameMate--chinese-wav2vec2-base"
 
     download_model \
-        "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/pytorch_model.bin" \
+        "https://huggingface.co/TencentGameMate/chinese-wav2vec2-base/resolve/main/pytorch_model.bin" \
         "$W2V_DIR" "pytorch_model.bin" 360000000
 
     # wav2vec config files (small)
-    for cfg_file in config.json preprocessor_config.json tokenizer_config.json vocab.json special_tokens_map.json; do
+    for cfg_file in config.json preprocessor_config.json; do
         if [ ! -f "$W2V_DIR/$cfg_file" ]; then
             aria2c -x 4 -s 4 --auto-file-renaming=false --allow-overwrite=true \
                 -c -d "$W2V_DIR" -o "$cfg_file" \
-                "https://huggingface.co/facebook/wav2vec2-base-960h/resolve/main/$cfg_file" 2>/dev/null || true
+                "https://huggingface.co/TencentGameMate/chinese-wav2vec2-base/resolve/main/$cfg_file" 2>/dev/null || true
         fi
     done
 
+    if [ $DOWNLOAD_ERRORS -gt 0 ]; then
+        echo "[entrypoint] WARNING: $DOWNLOAD_ERRORS download(s) may have failed. Check logs above."
+    fi
     echo "[entrypoint] All models checked/downloaded."
 else
     echo "[entrypoint] WARNING: No Network Volume at $VOLUME_ROOT"
