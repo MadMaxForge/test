@@ -39,6 +39,13 @@ RUN git clone https://github.com/a1lazydog/ComfyUI-AudioScheduler.git && \
 # Go back to root
 WORKDIR /
 
+# Patch handler.py: add video output support (VHS_VideoCombine uses 'gifs' key)
+# The default handler only looks for 'images' in ComfyUI output, but video nodes
+# like VHS_VideoCombine return results under 'gifs'. This patch makes the handler
+# also collect video files so they are returned as base64 in the API response.
+COPY patch_handler.py /patch_handler.py
+RUN python3 /patch_handler.py && rm /patch_handler.py
+
 # Custom entrypoint: symlink Network Volume models before starting ComfyUI
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
