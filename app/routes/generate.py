@@ -36,6 +36,7 @@ async def generate_video(
         image_filename=image.filename or "face.jpg",
         voice_id=voice_id,
         model_id=model_id or "eleven_multilingual_v2",
+        image_content_type=image.content_type or "image/jpeg",
     )
 
     job = job_manager.get_job(job_id)
