@@ -41,10 +41,9 @@ WORKDIR /
 
 # Patch handler.py: add video output support (VHS_VideoCombine uses 'gifs' key)
 # The default handler only looks for 'images' in ComfyUI output, but video nodes
-# like VHS_VideoCombine return results under 'gifs'. This patch makes the handler
-# also collect video files so they are returned as base64 in the API response.
-COPY patch_handler.py /patch_handler.py
-RUN python3 /patch_handler.py && rm /patch_handler.py
+# like VHS_VideoCombine return results under 'gifs'. This one-liner inserts a
+# normalization line (gifs->images) before the images check, auto-detecting indent.
+RUN python3 -c "import re; f='/handler.py'; c=open(f).read(); c,n=re.subn(r'(\n)((\s*)if \"images\" in node_output:)',r'\1\3if \"gifs\" in node_output and \"images\" not in node_output:\n\3    node_output[\"images\"] = node_output[\"gifs\"]\n\2',c,count=1); open(f,'w').write(c); print(f'Patched handler.py: {n} replacement(s)')"
 
 # Custom entrypoint: symlink Network Volume models before starting ComfyUI
 COPY entrypoint.sh /entrypoint.sh
