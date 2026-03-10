@@ -68,10 +68,10 @@ fi
 echo ""
 echo "=== Downloading models to network volume ==="
 
-# Install aria2 if not available
-if ! command -v aria2c &> /dev/null; then
-    echo "  [INSTALL] aria2..."
-    apt-get update -qq && apt-get install -y -qq aria2 2>/dev/null
+# Ensure wget is available (installed in Dockerfile)
+if ! command -v wget &> /dev/null; then
+    echo "  [INSTALL] wget..."
+    apt-get update -qq && apt-get install -y -qq wget 2>/dev/null
 fi
 
 mkdir -p "${MODELS_DIR}/diffusion_models"
@@ -80,13 +80,28 @@ mkdir -p "${MODELS_DIR}/vae"
 mkdir -p "${MODELS_DIR}/loras"
 mkdir -p "${MODELS_DIR}/checkpoints"
 
+# One-time migration: if models were downloaded with aria2c (corrupts through HF xet-bridge CDN),
+# delete them and re-download with wget (single connection, handles redirects reliably).
+VERSION_FILE="${MODELS_DIR}/.download_version"
+if [ ! -f "$VERSION_FILE" ] || [ "$(cat "$VERSION_FILE" 2>/dev/null)" != "wget-v2" ]; then
+    echo "  [MIGRATE] Clearing models downloaded with aria2c (corrupted through xet-bridge CDN)..."
+    rm -f "${MODELS_DIR}/diffusion_models/z_image_bf16.safetensors"
+    rm -f "${MODELS_DIR}/diffusion_models/z_image_turbo_bf16.safetensors"
+    rm -f "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
+    rm -f "${MODELS_DIR}/vae/ae.safetensors"
+    rm -f "${MODELS_DIR}/loras/nicegirls_zimagebase.safetensors"
+    rm -f "${MODELS_DIR}/loras/Z-Image-Fun-Lora-Distill-8-Steps-2602-ComfyUI.safetensors"
+    echo "wget-v2" > "$VERSION_FILE"
+    echo "  [OK] Old files cleared, will re-download with wget"
+fi
+
 download_if_missing() {
     local url="$1"
     local dest="$2"
     local filename=$(basename "$dest")
     
     if [ -f "$dest" ]; then
-        local size=$(stat -f%z "$dest" 2>/dev/null || stat -c%s "$dest" 2>/dev/null || echo "0")
+        local size=$(stat -c%s "$dest" 2>/dev/null || echo "0")
         if [ "$size" -gt 1000000 ]; then
             echo "  [SKIP] ${filename} already exists ($(numfmt --to=iec $size 2>/dev/null || echo ${size}B))"
             return 0
@@ -96,16 +111,18 @@ download_if_missing() {
     fi
     
     echo "  [DOWNLOAD] ${filename}..."
-    aria2c -x 16 -s 16 --max-tries=3 --retry-wait=5 \
-        --file-allocation=none --console-log-level=warn \
-        -d "$(dirname "$dest")" \
-        -o "${filename}" \
-        "$url" 2>&1 | tail -3
+    wget -q --show-progress -O "$dest" "$url" || true
     
     if [ -f "$dest" ]; then
-        echo "  [OK] ${filename}"
+        local size=$(stat -c%s "$dest" 2>/dev/null || echo "0")
+        if [ "$size" -lt 1000000 ]; then
+            echo "  [ERROR] ${filename} too small after download (${size} bytes), removing..."
+            rm -f "$dest"
+        else
+            echo "  [OK] ${filename} ($(numfmt --to=iec $size 2>/dev/null || echo ${size}B))"
+        fi
     else
-        echo "  [WARN] ${filename} download may have failed"
+        echo "  [ERROR] ${filename} download failed!"
     fi
 }
 
@@ -125,52 +142,14 @@ download_if_missing \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
 # VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
-# IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
-# aria2c parallel downloads corrupt this file through HF xet-bridge CDN redirect.
-# wget (installed in Dockerfile) handles redirects reliably with single connection.
-VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
-VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
-VAE_EXPECTED_SIZE=335304388
-if [ -f "$VAE_DEST" ]; then
-    VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-    if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
-        echo "  [FIX] ae.safetensors is wrong model or corrupted (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
-        rm -f "$VAE_DEST"
-    else
-        echo "  [SKIP] ae.safetensors correct FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
-    fi
-fi
-if [ ! -f "$VAE_DEST" ]; then
-    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE, ~335 MB) via wget..."
-    wget -q -O "$VAE_DEST" "$VAE_URL" || true
-    if [ -f "$VAE_DEST" ]; then
-        VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-        if [ "$VAE_SIZE" -lt 300000000 ]; then
-            echo "  [ERROR] ae.safetensors too small after download (${VAE_SIZE} bytes), removing..."
-            rm -f "$VAE_DEST"
-        else
-            echo "  [OK] ae.safetensors FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
-        fi
-    else
-        echo "  [ERROR] ae.safetensors download failed!"
-    fi
-fi
-# Clean up old renamed copies from previous fix attempts
-rm -f "${MODELS_DIR}/vae/ae_zimage.safetensors" 2>/dev/null || true
-rm -f "${MODELS_DIR}/vae/ae_flux_zimage.safetensors" 2>/dev/null || true
+download_if_missing \
+    "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors" \
+    "${MODELS_DIR}/vae/ae.safetensors"
 
 # NiceGirls ZImageBase LoRA (~170 MB) - renamed to match workflow
-if [ ! -f "${MODELS_DIR}/loras/nicegirls_zimagebase.safetensors" ]; then
-    echo "  [DOWNLOAD] nicegirls_zimagebase.safetensors..."
-    aria2c -x 16 -s 16 --max-tries=3 --retry-wait=5 \
-        --file-allocation=none --console-log-level=warn \
-        -d "${MODELS_DIR}/loras" \
-        -o "nicegirls_zimagebase.safetensors" \
-        "https://huggingface.co/prettyshisya/nicegirls/resolve/main/nicegirls_Zimage.safetensors" 2>&1 | tail -3
-    echo "  [OK] nicegirls_zimagebase.safetensors"
-else
-    echo "  [SKIP] nicegirls_zimagebase.safetensors already exists"
-fi
+download_if_missing \
+    "https://huggingface.co/prettyshisya/nicegirls/resolve/main/nicegirls_Zimage.safetensors" \
+    "${MODELS_DIR}/loras/nicegirls_zimagebase.safetensors"
 
 # Z-Image Fun Lora Distill 8 Steps (568 MB)
 download_if_missing \
