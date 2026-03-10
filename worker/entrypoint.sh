@@ -68,9 +68,52 @@ python3 -c "import onnxruntime" 2>/dev/null || {
 }
 
 # Patch handler.py for video output support (VHS_VideoCombine uses 'gifs' key)
+# The base handler only checks for 'images' in node_output, but VHS outputs under 'gifs'
+# Also, temp outputs are skipped by the handler, so we need save_output=True in workflow
 if ! grep -q 'gifs' /handler.py 2>/dev/null; then
-    echo "[entrypoint] Patching handler.py for video output..."
-    python3 -c "import re; f='/handler.py'; c=open(f).read(); c,n=re.subn(r'(\n)((\s*)if \"images\" in node_output:)',r'\1\3if \"gifs\" in node_output and \"images\" not in node_output:\n\3    node_output[\"images\"] = node_output[\"gifs\"]\n\2',c,count=1); open(f,'w').write(c); print(f'Patched handler.py: {n} replacement(s)')"
+    echo "[entrypoint] Patching handler.py for video output (gifs -> images)..."
+    python3 << 'PATCH_EOF'
+import re
+
+handler_path = '/handler.py'
+with open(handler_path) as f:
+    content = f.read()
+
+# Strategy: Before the 'if "images" in node_output:' check, add gifs->images mapping
+# This handles VHS_VideoCombine which outputs videos under 'gifs' key
+patch_code = '''
+            # [SCAIL patch] Map VHS_VideoCombine 'gifs' output to 'images' for video support
+            if "gifs" in node_output and "images" not in node_output:
+                node_output["images"] = node_output["gifs"]
+'''
+
+# Find the pattern: 'if "images" in node_output:' with any indentation
+pattern = r'(\n)([ \t]*)(if "images" in node_output:)'
+match = re.search(pattern, content)
+if match:
+    indent = match.group(2)
+    # Insert patch before the if statement, with matching indentation
+    patch_lines = []
+    for line in patch_code.strip().split('\n'):
+        stripped = line.lstrip()
+        if stripped.startswith('#'):
+            patch_lines.append(f'{indent}{stripped}')
+        elif stripped.startswith('if'):
+            patch_lines.append(f'{indent}{stripped}')
+        elif stripped.startswith('node_output'):
+            patch_lines.append(f'{indent}    {stripped}')
+        else:
+            patch_lines.append(f'{indent}{stripped}')
+    
+    replacement = '\n' + '\n'.join(patch_lines) + '\n' + match.group(2) + match.group(3)
+    content = content[:match.start()] + replacement + content[match.end():]
+    
+    with open(handler_path, 'w') as f:
+        f.write(content)
+    print(f'[entrypoint] Patched handler.py: added gifs->images mapping')
+else:
+    print('[entrypoint] WARNING: Could not find patch target in handler.py')
+PATCH_EOF
 fi
 
 echo "[entrypoint] Custom nodes ready."
