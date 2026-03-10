@@ -203,11 +203,21 @@ download_model \
     "${MODELS_DIR}/loras/Z-Image-Fun-Lora-Distill-8-Steps-2602-ComfyUI.safetensors" \
     500000000
 
-# Check for custom LoRA
-if [ -f "${MODELS_DIR}/loras/LOURTA_000000700.safetensors" ]; then
-    echo "  [OK] Custom LoRA LOURTA_000000700.safetensors found"
+# Custom character LoRA from Google Drive (lanna.safetensors, 162 MB)
+# Google Drive file ID: 1t6F9-yvTYyzDAn9IKQ8qKp2EDw0ru657
+LORA_DEST="${MODELS_DIR}/loras/lanna.safetensors"
+if [ -f "$LORA_DEST" ]; then
+    local_size=$(stat -c%s "$LORA_DEST" 2>/dev/null || echo "0")
+    if [ "$local_size" -ge 100000000 ] && validate_safetensors "$LORA_DEST"; then
+        echo "  [SKIP] lanna.safetensors ($(numfmt --to=iec $local_size 2>/dev/null || echo ${local_size}B))"
+    else
+        echo "  [CORRUPT] lanna.safetensors failed validation, re-downloading..."
+        rm -f "$LORA_DEST"
+        gdown "1t6F9-yvTYyzDAn9IKQ8qKp2EDw0ru657" -O "$LORA_DEST" 2>&1 || true
+    fi
 else
-    echo "  [INFO] Custom LoRA LOURTA_000000700.safetensors not found (user will upload later)"
+    echo "  [DOWNLOAD] lanna.safetensors from Google Drive..."
+    gdown "1t6F9-yvTYyzDAn9IKQ8qKp2EDw0ru657" -O "$LORA_DEST" 2>&1 || true
 fi
 
 # ==========================================

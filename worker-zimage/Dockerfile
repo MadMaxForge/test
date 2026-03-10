@@ -4,6 +4,9 @@ FROM runpod/worker-comfyui:5.7.1-base
 # (aria2c/wget both had issues with HF xet-bridge CDN causing truncated files)
 RUN which curl || (apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*)
 
+# gdown for downloading LoRA from Google Drive (handles virus scan confirmation)
+RUN pip install gdown
+
 # Install custom nodes
 # RES4LYF - for ClownsharKSampler_Beta
 RUN cd /comfyui/custom_nodes && \
