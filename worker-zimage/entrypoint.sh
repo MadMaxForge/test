@@ -125,53 +125,31 @@ download_if_missing \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
 # VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
-# IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
-# aria2c parallel downloads corrupt this file through HF xet-bridge CDN.
-# Using huggingface_hub (built into ComfyUI) for reliable download.
+# Pre-downloaded during Docker build into /opt/models/vae/ae.safetensors
+# Shared volume may have WAN VAE from InfiniteTalk - we always overwrite with correct version
 VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
-VAE_EXPECTED_SIZE=335304388
+VAE_SRC="/opt/models/vae/ae.safetensors"
+VAE_EXPECTED_SIZE=$(stat -c%s "$VAE_SRC" 2>/dev/null || echo "335304388")
+NEED_VAE_COPY=false
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
     if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
-        echo "  [FIX] ae.safetensors is wrong model or corrupted (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
+        echo "  [FIX] ae.safetensors on volume is wrong model (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Replacing..."
         rm -f "$VAE_DEST"
+        NEED_VAE_COPY=true
     else
         echo "  [SKIP] ae.safetensors correct ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
     fi
+else
+    NEED_VAE_COPY=true
 fi
-if [ ! -f "$VAE_DEST" ]; then
-    echo "  [DOWNLOAD] ae.safetensors via huggingface_hub..."
-    python3 -c "
-import shutil, os
-try:
-    from huggingface_hub import hf_hub_download
-    path = hf_hub_download(repo_id='Comfy-Org/z_image', filename='split_files/vae/ae.safetensors')
-    dest = '${VAE_DEST}'
-    shutil.copy2(path, dest)
-    size = os.path.getsize(dest)
-    print(f'  [OK] ae.safetensors downloaded via huggingface_hub ({size} bytes)')
-except Exception as e:
-    print(f'  [WARN] huggingface_hub failed: {e}, trying requests...')
-    try:
-        import requests
-        url = 'https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors'
-        r = requests.get(url, stream=True, allow_redirects=True, timeout=300)
-        r.raise_for_status()
-        dest = '${VAE_DEST}'
-        with open(dest, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=1048576):
-                f.write(chunk)
-        size = os.path.getsize(dest)
-        print(f'  [OK] ae.safetensors downloaded via requests ({size} bytes)')
-    except Exception as e2:
-        print(f'  [ERROR] All download methods failed: {e2}')
-" || echo "  [WARN] VAE download script failed, continuing anyway..."
-    if [ -f "$VAE_DEST" ]; then
-        VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-        if [ "$VAE_SIZE" -lt 300000000 ]; then
-            echo "  [ERROR] ae.safetensors too small (${VAE_SIZE} bytes), removing..."
-            rm -f "$VAE_DEST"
-        fi
+if [ "$NEED_VAE_COPY" = true ]; then
+    if [ -f "$VAE_SRC" ]; then
+        echo "  [COPY] ae.safetensors from Docker image to volume..."
+        cp "$VAE_SRC" "$VAE_DEST"
+        echo "  [OK] ae.safetensors copied ($(stat -c%s "$VAE_DEST" 2>/dev/null) bytes)"
+    else
+        echo "  [ERROR] VAE not found in Docker image at $VAE_SRC!"
     fi
 fi
 # Clean up old renamed copies from previous fix attempts
