@@ -146,8 +146,12 @@ else
     NEED_DOWNLOAD=true
 fi
 if [ "$NEED_DOWNLOAD" = true ]; then
-    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE) via wget..."
-    wget -q --show-progress -O "$VAE_DEST" "$VAE_URL" 2>&1 | tail -3
+    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE)..."
+    aria2c -x 1 -s 1 --max-tries=3 --retry-wait=5 \
+        --file-allocation=none --console-log-level=warn \
+        -d "$(dirname "$VAE_DEST")" \
+        -o "$(basename "$VAE_DEST")" \
+        "$VAE_URL" 2>&1 | tail -3
     if [ -f "$VAE_DEST" ]; then
         VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
         if [ "$VAE_SIZE" -lt "$VAE_MIN_SIZE" ]; then
