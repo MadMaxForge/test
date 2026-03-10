@@ -235,39 +235,9 @@ else
 fi
 
 # ============================================================
-# Step 3: Start ComfyUI + RunPod handler
-# We start ComfyUI in background, wait for it to be ready,
-# then start the handler (which connects to RunPod job queue).
+# Step 3: Delegate to the original /start.sh from the base image
+# /start.sh handles: libtcmalloc, ComfyUI startup, handler startup
+# This is the proven startup sequence from runpod/worker-comfyui
 # ============================================================
-
-# Use libtcmalloc for better memory management (from original /start.sh)
-TCMALLOC="$(ldconfig -p | grep -Po "libtcmalloc.so.\d" | head -n 1)"
-export LD_PRELOAD="${TCMALLOC}"
-
-echo "[entrypoint] Starting ComfyUI in background..."
-python -u /comfyui/main.py --disable-auto-launch --disable-metadata --listen --port 8188 &
-COMFYUI_PID=$!
-echo "[entrypoint] ComfyUI PID: $COMFYUI_PID"
-
-# Wait for ComfyUI to be ready (up to 10 minutes)
-echo "[entrypoint] Waiting for ComfyUI to become ready on port 8188..."
-MAX_WAIT=600
-WAITED=0
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8188/ 2>/dev/null | grep -q "200"; then
-        echo "[entrypoint] ComfyUI is ready after ${WAITED}s!"
-        break
-    fi
-    sleep 2
-    WAITED=$((WAITED + 2))
-    if [ $((WAITED % 30)) -eq 0 ]; then
-        echo "[entrypoint] Still waiting for ComfyUI... (${WAITED}s elapsed)"
-    fi
-done
-
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "[entrypoint] WARNING: ComfyUI did not become ready in ${MAX_WAIT}s, starting handler anyway"
-fi
-
-echo "[entrypoint] Starting RunPod handler..."
-exec python -u /handler.py
+echo "[entrypoint] Setup complete. Delegating to /start.sh..."
+exec /start.sh
