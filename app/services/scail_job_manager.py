@@ -1,11 +1,10 @@
 import copy
-import json
 import uuid
 import base64
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.models.scail_schemas import ScailJobStatus, ScailJobResponse
+from app.models.scail_schemas import ScailJobStatus
 from app.services import scail_runpod_api
 
 

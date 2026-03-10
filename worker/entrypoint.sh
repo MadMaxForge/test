@@ -112,9 +112,19 @@ if [ -d "$VOLUME_ROOT" ]; then
     # ===== Flux Klein Models =====
 
     # Flux Klein 9B FP8 diffusion model (~9.5 GB)
+    # Try HuggingFace first (gated), fall back to ModelScope mirror if unavailable
     download_model \
         "https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors" \
         "$DIFF_DIR" "flux-2-klein-9b-fp8.safetensors" 9000000000
+
+    # Fallback: if HuggingFace download failed (gated repo), try ModelScope
+    if [ ! -f "$DIFF_DIR/flux-2-klein-9b-fp8.safetensors" ] || \
+       [ $(stat -c%s "$DIFF_DIR/flux-2-klein-9b-fp8.safetensors" 2>/dev/null || echo 0) -lt 9000000000 ]; then
+        echo "[entrypoint] HuggingFace download failed for Flux Klein, trying ModelScope..."
+        download_model \
+            "https://modelscope.cn/models/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/master/flux-2-klein-9b-fp8.safetensors" \
+            "$DIFF_DIR" "flux-2-klein-9b-fp8.safetensors" 9000000000
+    fi
 
     # Flux Klein text encoder - Qwen 3 8B FP8 mixed (~4.5 GB)
     download_model \
