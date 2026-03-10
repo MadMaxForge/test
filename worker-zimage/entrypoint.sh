@@ -125,31 +125,34 @@ download_if_missing \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
 # VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
-# Pre-downloaded during Docker build into /opt/models/vae/ae.safetensors
-# Shared volume may have WAN VAE from InfiniteTalk - we always overwrite with correct version
+# IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
+# aria2c parallel downloads corrupt this file through HF xet-bridge CDN redirect.
+# wget (installed in Dockerfile) handles redirects reliably with single connection.
 VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
-VAE_SRC="/opt/models/vae/ae.safetensors"
-VAE_EXPECTED_SIZE=$(stat -c%s "$VAE_SRC" 2>/dev/null || echo "335304388")
-NEED_VAE_COPY=false
+VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
+VAE_EXPECTED_SIZE=335304388
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
     if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
-        echo "  [FIX] ae.safetensors on volume is wrong model (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Replacing..."
+        echo "  [FIX] ae.safetensors is wrong model or corrupted (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
         rm -f "$VAE_DEST"
-        NEED_VAE_COPY=true
     else
-        echo "  [SKIP] ae.safetensors correct ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
+        echo "  [SKIP] ae.safetensors correct FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
     fi
-else
-    NEED_VAE_COPY=true
 fi
-if [ "$NEED_VAE_COPY" = true ]; then
-    if [ -f "$VAE_SRC" ]; then
-        echo "  [COPY] ae.safetensors from Docker image to volume..."
-        cp "$VAE_SRC" "$VAE_DEST"
-        echo "  [OK] ae.safetensors copied ($(stat -c%s "$VAE_DEST" 2>/dev/null) bytes)"
+if [ ! -f "$VAE_DEST" ]; then
+    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE, ~335 MB) via wget..."
+    wget -q -O "$VAE_DEST" "$VAE_URL" || true
+    if [ -f "$VAE_DEST" ]; then
+        VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
+        if [ "$VAE_SIZE" -lt 300000000 ]; then
+            echo "  [ERROR] ae.safetensors too small after download (${VAE_SIZE} bytes), removing..."
+            rm -f "$VAE_DEST"
+        else
+            echo "  [OK] ae.safetensors FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
+        fi
     else
-        echo "  [ERROR] VAE not found in Docker image at $VAE_SRC!"
+        echo "  [ERROR] ae.safetensors download failed!"
     fi
 fi
 # Clean up old renamed copies from previous fix attempts

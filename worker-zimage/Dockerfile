@@ -1,15 +1,8 @@
 FROM runpod/worker-comfyui:5.7.1-base
 
 # Install aria2 and wget for model downloads
+# wget needed for VAE download (aria2c parallel connections corrupt through HF xet-bridge CDN)
 RUN apt-get update && apt-get install -y aria2 wget && rm -rf /var/lib/apt/lists/*
-
-# Pre-download FLUX AE VAE into image (335 MB)
-# This avoids runtime download issues with HF xet-bridge CDN
-# aria2c parallel downloads corrupt this file; wget works reliably at build time
-RUN mkdir -p /opt/models/vae && \
-    wget -q --show-progress -O /opt/models/vae/ae.safetensors \
-    "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors" && \
-    ls -la /opt/models/vae/ae.safetensors
 
 # Install custom nodes
 # RES4LYF - for ClownsharKSampler_Beta
