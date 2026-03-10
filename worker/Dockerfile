@@ -1,6 +1,6 @@
 # Custom RunPod ComfyUI worker for WAN SCAIL + Flux Klein motion control workflow
 # Based on official RunPod worker-comfyui (latest stable)
-# Build trigger: endpoint fsnex52d0jmny volume wimq502ije v4 fresh-build
+# Build trigger: endpoint fsnex52d0jmny volume wimq502ije v5 fix-copy-paths
 FROM runpod/worker-comfyui:5.7.1-base
 
 # Install aria2 for fast multi-threaded model downloads with resume support
@@ -67,9 +67,9 @@ WORKDIR /
 # Patch handler.py: add video output support (VHS_VideoCombine uses 'gifs' key)
 RUN python3 -c "import re; f='/handler.py'; c=open(f).read(); c,n=re.subn(r'(\n)((\s*)if \"images\" in node_output:)',r'\1\3if \"gifs\" in node_output and \"images\" not in node_output:\n\3    node_output[\"images\"] = node_output[\"gifs\"]\n\2',c,count=1); open(f,'w').write(c); print(f'Patched handler.py: {n} replacement(s)')"
 
-# Custom entrypoint and start script
-COPY worker/entrypoint.sh /entrypoint.sh
-COPY worker/start.sh /start-custom.sh
+# Custom entrypoint and start script (paths relative to worker/ build context)
+COPY entrypoint.sh /entrypoint.sh
+COPY start.sh /start-custom.sh
 RUN chmod +x /entrypoint.sh /start-custom.sh
 
 CMD ["/entrypoint.sh"]
