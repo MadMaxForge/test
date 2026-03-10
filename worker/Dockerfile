@@ -1,6 +1,6 @@
 # Custom RunPod ComfyUI worker for WAN SCAIL + Flux Klein motion control workflow
 # Based on official RunPod worker-comfyui (latest stable)
-# Endpoint: 07omy70ke8uteh | Volume: wimq502ije | Base image deployment (runtime node install)
+# Endpoint: b8ijhdve9y2kyf | Volume: wimq502ije | Base image deployment (runtime node install)
 FROM runpod/worker-comfyui:5.7.1-base
 
 # Install aria2 for fast multi-threaded model downloads with resume support
