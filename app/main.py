@@ -21,9 +21,11 @@ app.add_middleware(
 
 from app.routes.generate import router as generate_router
 from app.routes.voices import router as voices_router
+from app.routes.generate_motion import router as motion_router
 
 app.include_router(generate_router)
 app.include_router(voices_router)
+app.include_router(motion_router)
 
 
 @app.get("/healthz")
