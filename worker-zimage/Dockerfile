@@ -1,8 +1,8 @@
 FROM runpod/worker-comfyui:5.7.1-base
 
-# Install aria2 and wget for model downloads
-# wget needed for VAE download (aria2c parallel connections corrupt through HF xet-bridge CDN)
-RUN apt-get update && apt-get install -y aria2 wget && rm -rf /var/lib/apt/lists/*
+# curl is pre-installed in base image; ensure it's available for model downloads
+# (aria2c/wget both had issues with HF xet-bridge CDN causing truncated files)
+RUN which curl || (apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*)
 
 # Install custom nodes
 # RES4LYF - for ClownsharKSampler_Beta
