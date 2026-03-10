@@ -44,7 +44,7 @@ RUN git clone https://github.com/yolain/ComfyUI-Easy-Use.git && \
     ([ -f requirements.txt ] && pip install -r requirements.txt --no-cache-dir || true)
 
 # 7. ComfyUI-WanAnimatePreprocess - ImageStitch
-RUN git clone https://github.com/daje5426/ComfyUI-WanAnimatePreprocess.git && \
+RUN git clone https://github.com/kijai/ComfyUI-WanAnimatePreprocess.git && \
     cd ComfyUI-WanAnimatePreprocess && \
     ([ -f requirements.txt ] && pip install -r requirements.txt --no-cache-dir || true)
 
