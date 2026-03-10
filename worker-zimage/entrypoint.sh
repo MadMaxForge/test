@@ -124,37 +124,45 @@ download_if_missing \
     "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors" \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
-# VAE for Z-Image (335 MB) - FLUX.1 AE VAE
-# Using unique filename to avoid conflict with InfiniteTalk's ae.safetensors on shared volume
-VAE_DEST="${MODELS_DIR}/vae/ae_flux_zimage.safetensors"
-VAE_URL="https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors"
-VAE_MIN_SIZE=300000000  # 300MB minimum for valid VAE
+# VAE ae.safetensors (335 MB) - FLUX.1 AE VAE
+# IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
+# We force-replace it with the correct FLUX AE VAE every cold start.
+# InfiniteTalk will re-download its own VAE on its next cold start.
+VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
+VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
+VAE_EXPECTED_SIZE=335304388  # exact size of Z-Image FLUX AE VAE from Comfy-Org
+VAE_MIN_SIZE=330000000       # minimum acceptable size
+NEED_DOWNLOAD=false
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-    if [ "$VAE_SIZE" -lt "$VAE_MIN_SIZE" ]; then
-        echo "  [FIX] ae_flux_zimage.safetensors too small (${VAE_SIZE} bytes), re-downloading..."
-        rm -f "$VAE_DEST"
+    if [ "$VAE_SIZE" -eq "$VAE_EXPECTED_SIZE" ]; then
+        echo "  [SKIP] ae.safetensors is correct FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
     else
-        echo "  [SKIP] ae_flux_zimage.safetensors already exists ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
+        echo "  [FIX] ae.safetensors wrong size (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Replacing with FLUX AE VAE..."
+        rm -f "$VAE_DEST"
+        NEED_DOWNLOAD=true
     fi
+else
+    NEED_DOWNLOAD=true
 fi
-if [ ! -f "$VAE_DEST" ]; then
-    echo "  [DOWNLOAD] ae_flux_zimage.safetensors via wget..."
+if [ "$NEED_DOWNLOAD" = true ]; then
+    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE) via wget..."
     wget -q --show-progress -O "$VAE_DEST" "$VAE_URL" 2>&1 | tail -3
     if [ -f "$VAE_DEST" ]; then
         VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
         if [ "$VAE_SIZE" -lt "$VAE_MIN_SIZE" ]; then
-            echo "  [ERROR] ae_flux_zimage.safetensors download incomplete (${VAE_SIZE} bytes), removing..."
+            echo "  [ERROR] ae.safetensors download incomplete (${VAE_SIZE} bytes), removing..."
             rm -f "$VAE_DEST"
         else
-            echo "  [OK] ae_flux_zimage.safetensors ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
+            echo "  [OK] ae.safetensors FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
         fi
     else
-        echo "  [WARN] ae_flux_zimage.safetensors download failed!"
+        echo "  [WARN] ae.safetensors download failed!"
     fi
 fi
-# Clean up old renamed copies
+# Clean up old renamed copies from previous fix attempts
 rm -f "${MODELS_DIR}/vae/ae_zimage.safetensors" 2>/dev/null || true
+rm -f "${MODELS_DIR}/vae/ae_flux_zimage.safetensors" 2>/dev/null || true
 
 # NiceGirls ZImageBase LoRA (~170 MB) - renamed to match workflow
 if [ ! -f "${MODELS_DIR}/loras/nicegirls_zimagebase.safetensors" ]; then
