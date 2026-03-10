@@ -126,42 +126,50 @@ download_if_missing \
 
 # VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
 # IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
-# aria2c parallel downloads corrupt this file through HF xet-bridge CDN redirect.
-# Using Python urllib for reliable single-connection download.
+# aria2c parallel downloads corrupt this file through HF xet-bridge CDN.
+# Using huggingface_hub (built into ComfyUI) for reliable download.
 VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
-VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
 VAE_EXPECTED_SIZE=335304388
-NEED_VAE_DOWNLOAD=false
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
     if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
         echo "  [FIX] ae.safetensors is wrong model or corrupted (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
         rm -f "$VAE_DEST"
-        NEED_VAE_DOWNLOAD=true
     else
         echo "  [SKIP] ae.safetensors correct ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
     fi
-else
-    NEED_VAE_DOWNLOAD=true
 fi
-if [ "$NEED_VAE_DOWNLOAD" = true ]; then
-    echo "  [DOWNLOAD] ae.safetensors via Python (single-connection, handles redirects)..."
+if [ ! -f "$VAE_DEST" ]; then
+    echo "  [DOWNLOAD] ae.safetensors via huggingface_hub..."
     python3 -c "
-import urllib.request, os, sys
-url = '$VAE_URL'
-dest = '$VAE_DEST'
+import shutil, os
 try:
-    urllib.request.urlretrieve(url, dest)
+    from huggingface_hub import hf_hub_download
+    path = hf_hub_download(repo_id='Comfy-Org/z_image', filename='split_files/vae/ae.safetensors')
+    dest = '${VAE_DEST}'
+    shutil.copy2(path, dest)
     size = os.path.getsize(dest)
-    print(f'  [OK] ae.safetensors downloaded ({size} bytes)')
+    print(f'  [OK] ae.safetensors downloaded via huggingface_hub ({size} bytes)')
 except Exception as e:
-    print(f'  [ERROR] Download failed: {e}', file=sys.stderr)
-    sys.exit(1)
-"
+    print(f'  [WARN] huggingface_hub failed: {e}, trying requests...')
+    try:
+        import requests
+        url = 'https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors'
+        r = requests.get(url, stream=True, allow_redirects=True, timeout=300)
+        r.raise_for_status()
+        dest = '${VAE_DEST}'
+        with open(dest, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1048576):
+                f.write(chunk)
+        size = os.path.getsize(dest)
+        print(f'  [OK] ae.safetensors downloaded via requests ({size} bytes)')
+    except Exception as e2:
+        print(f'  [ERROR] All download methods failed: {e2}')
+" || echo "  [WARN] VAE download script failed, continuing anyway..."
     if [ -f "$VAE_DEST" ]; then
         VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
         if [ "$VAE_SIZE" -lt 300000000 ]; then
-            echo "  [ERROR] ae.safetensors too small after download (${VAE_SIZE} bytes), removing..."
+            echo "  [ERROR] ae.safetensors too small (${VAE_SIZE} bytes), removing..."
             rm -f "$VAE_DEST"
         fi
     fi
