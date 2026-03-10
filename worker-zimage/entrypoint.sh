@@ -124,46 +124,23 @@ download_if_missing \
     "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors" \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
-# VAE ae.safetensors (335 MB) - FLUX.1 AE VAE
+# VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
 # IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
-# We force-replace it with the correct FLUX AE VAE every cold start.
-# InfiniteTalk will re-download its own VAE on its next cold start.
+# We check file size and force-replace if it's the wrong model.
+# Expected size: 335,304,388 bytes (FLUX AE VAE from Comfy-Org)
 VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
-VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
-VAE_EXPECTED_SIZE=335304388  # exact size of Z-Image FLUX AE VAE from Comfy-Org
-VAE_MIN_SIZE=330000000       # minimum acceptable size
-NEED_DOWNLOAD=false
+VAE_EXPECTED_SIZE=335304388
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-    if [ "$VAE_SIZE" -eq "$VAE_EXPECTED_SIZE" ]; then
-        echo "  [SKIP] ae.safetensors is correct FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
-    else
-        echo "  [FIX] ae.safetensors wrong size (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Replacing with FLUX AE VAE..."
+    if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
+        echo "  [FIX] ae.safetensors is wrong model (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
         rm -f "$VAE_DEST"
-        NEED_DOWNLOAD=true
-    fi
-else
-    NEED_DOWNLOAD=true
-fi
-if [ "$NEED_DOWNLOAD" = true ]; then
-    echo "  [DOWNLOAD] ae.safetensors (FLUX AE VAE)..."
-    aria2c -x 1 -s 1 --max-tries=3 --retry-wait=5 \
-        --file-allocation=none --console-log-level=warn \
-        -d "$(dirname "$VAE_DEST")" \
-        -o "$(basename "$VAE_DEST")" \
-        "$VAE_URL" 2>&1 | tail -3
-    if [ -f "$VAE_DEST" ]; then
-        VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
-        if [ "$VAE_SIZE" -lt "$VAE_MIN_SIZE" ]; then
-            echo "  [ERROR] ae.safetensors download incomplete (${VAE_SIZE} bytes), removing..."
-            rm -f "$VAE_DEST"
-        else
-            echo "  [OK] ae.safetensors FLUX AE VAE ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
-        fi
-    else
-        echo "  [WARN] ae.safetensors download failed!"
     fi
 fi
+# Use same download_if_missing function that works for all other models
+download_if_missing \
+    "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors" \
+    "${MODELS_DIR}/vae/ae.safetensors"
 # Clean up old renamed copies from previous fix attempts
 rm -f "${MODELS_DIR}/vae/ae_zimage.safetensors" 2>/dev/null || true
 rm -f "${MODELS_DIR}/vae/ae_flux_zimage.safetensors" 2>/dev/null || true
