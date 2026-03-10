@@ -124,10 +124,10 @@ download_if_missing \
     "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors" \
     "${MODELS_DIR}/text_encoders/qwen_3_4b.safetensors"
 
-# VAE ae.safetensors (335 MB)
+# VAE ae_zimage.safetensors (335 MB) - renamed to avoid conflict with InfiniteTalk ae.safetensors
 download_if_missing \
     "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors" \
-    "${MODELS_DIR}/vae/ae.safetensors"
+    "${MODELS_DIR}/vae/ae_zimage.safetensors"
 
 # NiceGirls ZImageBase LoRA (~170 MB) - renamed to match workflow
 if [ ! -f "${MODELS_DIR}/loras/nicegirls_zimagebase.safetensors" ]; then
