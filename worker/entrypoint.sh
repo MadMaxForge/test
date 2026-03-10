@@ -1,8 +1,10 @@
 #!/bin/bash
 # Custom entrypoint for WAN SCAIL + Flux Klein ComfyUI worker
+# 0. Installs custom nodes if not already present (supports base image deployment)
 # 1. Downloads all required models to Network Volume (if missing)
 # 2. Creates symlinks from Volume to ComfyUI model directories
-# 3. Starts ComfyUI worker
+# 3. Patches handler.py for video output support
+# 4. Starts ComfyUI worker
 #
 # Uses aria2c for fast multi-threaded downloads with auto-resume
 # NOTE: No "set -e" — individual download failures are handled gracefully
@@ -10,7 +12,68 @@
 VOLUME_ROOT="/runpod-volume"
 VOLUME_MODELS="$VOLUME_ROOT/models"
 COMFYUI_MODELS="/comfyui/models"
+COMFYUI_NODES="/comfyui/custom_nodes"
 DOWNLOAD_ERRORS=0
+
+# ============================================================
+# Step 0: Install custom nodes if not already present
+# (Supports deployment with base image when Docker build is unavailable)
+# ============================================================
+install_node() {
+    local repo_url="$1"
+    local dirname="$2"
+    local node_path="$COMFYUI_NODES/$dirname"
+
+    if [ -d "$node_path" ] && [ -f "$node_path/__init__.py" -o -d "$node_path/js" -o -f "$node_path/nodes.py" ]; then
+        echo "[entrypoint] Node OK: $dirname"
+        return 0
+    fi
+
+    echo "[entrypoint] Installing custom node: $dirname ..."
+    cd "$COMFYUI_NODES"
+    rm -rf "$dirname"
+    git clone --depth 1 "$repo_url" "$dirname" 2>&1
+    if [ -f "$node_path/requirements.txt" ]; then
+        pip install -r "$node_path/requirements.txt" --no-cache-dir 2>&1 | tail -3
+    fi
+    if [ -f "$node_path/install.py" ]; then
+        cd "$node_path" && python install.py 2>&1 | tail -3 || true
+    fi
+    echo "[entrypoint] Installed: $dirname"
+}
+
+echo "[entrypoint] Checking custom nodes..."
+mkdir -p "$COMFYUI_NODES"
+
+# Install aria2 if not present (base image may not have it)
+if ! command -v aria2c &>/dev/null; then
+    echo "[entrypoint] Installing aria2..."
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
+fi
+
+install_node "https://github.com/kijai/ComfyUI-WanVideoWrapper.git" "ComfyUI-WanVideoWrapper"
+install_node "https://github.com/kijai/ComfyUI-SCAIL-Pose.git" "ComfyUI-SCAIL-Pose"
+install_node "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git" "ComfyUI-VideoHelperSuite"
+install_node "https://github.com/kijai/ComfyUI-KJNodes.git" "ComfyUI-KJNodes"
+install_node "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git" "ComfyUI-Impact-Pack"
+install_node "https://github.com/yolain/ComfyUI-Easy-Use.git" "ComfyUI-Easy-Use"
+install_node "https://github.com/kijai/ComfyUI-WanAnimatePreprocess.git" "ComfyUI-WanAnimatePreprocess"
+install_node "https://github.com/Fannovel16/comfyui_controlnet_aux.git" "comfyui_controlnet_aux"
+install_node "https://github.com/ClownsharkBatwing/RES4LYF.git" "RES4LYF"
+
+# Install onnxruntime-gpu if not present
+python3 -c "import onnxruntime" 2>/dev/null || {
+    echo "[entrypoint] Installing onnxruntime-gpu..."
+    pip install onnxruntime-gpu --no-cache-dir 2>&1 | tail -3 || pip install onnxruntime --no-cache-dir 2>&1 | tail -3
+}
+
+# Patch handler.py for video output support (VHS_VideoCombine uses 'gifs' key)
+if ! grep -q 'gifs' /handler.py 2>/dev/null; then
+    echo "[entrypoint] Patching handler.py for video output..."
+    python3 -c "import re; f='/handler.py'; c=open(f).read(); c,n=re.subn(r'(\n)((\s*)if \"images\" in node_output:)',r'\1\3if \"gifs\" in node_output and \"images\" not in node_output:\n\3    node_output[\"images\"] = node_output[\"gifs\"]\n\2',c,count=1); open(f,'w').write(c); print(f'Patched handler.py: {n} replacement(s)')"
+fi
+
+echo "[entrypoint] Custom nodes ready."
 
 # ============================================================
 # Helper: download a model file if missing or incomplete
@@ -171,4 +234,8 @@ fi
 # Step 3: Start ComfyUI worker
 # ============================================================
 echo "[entrypoint] Starting ComfyUI worker..."
-exec /start.sh
+if [ -x /start-custom.sh ]; then
+    exec /start-custom.sh
+else
+    exec /start.sh
+fi
