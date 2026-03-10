@@ -5,9 +5,6 @@ on:
   push:
     branches:
       - devin/1773158096-scail-endpoint
-    paths:
-      - 'worker/**'
-      - 'Dockerfile'
 
 env:
   REGISTRY: ghcr.io
