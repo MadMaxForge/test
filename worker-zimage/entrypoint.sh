@@ -38,7 +38,7 @@ except Exception as e:
 }
 
 # ============================================================
-# Helper: download model with curl, validate, retry on failure
+# Helper: download model with wget, validate, retry on failure
 # Args: url dest min_bytes
 # ============================================================
 download_model() {
@@ -68,12 +68,12 @@ download_model() {
         fi
     fi
 
-    # Download with curl
+    # Download with wget (curl is not available in base image)
     local attempt=1
     local max_attempts=2
     while [ $attempt -le $max_attempts ]; do
         echo "  [DOWNLOAD] ${filename} (attempt ${attempt}/${max_attempts})..."
-        if curl -L -f --progress-bar --retry 3 --retry-delay 5 -o "$dest" "$url"; then
+        if wget -q --show-progress --tries=3 --waitretry=5 -O "$dest" "$url"; then
             local size
             size=$(stat -c%s "$dest" 2>/dev/null || echo "0")
             if [ "$size" -ge "$min_bytes" ] && validate_safetensors "$dest"; then
@@ -83,7 +83,7 @@ download_model() {
             echo "  [FAILED] ${filename} downloaded but invalid (${size} bytes)"
             rm -f "$dest"
         else
-            echo "  [FAILED] ${filename} curl failed (attempt ${attempt})"
+            echo "  [FAILED] ${filename} wget failed (attempt ${attempt})"
             rm -f "$dest"
         fi
         attempt=$((attempt + 1))
