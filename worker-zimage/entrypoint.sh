@@ -126,21 +126,46 @@ download_if_missing \
 
 # VAE ae.safetensors (335 MB) - FLUX AE VAE for Z-Image
 # IMPORTANT: Shared volume may have WAN VAE from InfiniteTalk cached as ae.safetensors.
-# We check file size and force-replace if it's the wrong model.
-# Expected size: 335,304,388 bytes (FLUX AE VAE from Comfy-Org)
+# aria2c parallel downloads corrupt this file through HF xet-bridge CDN redirect.
+# Using Python urllib for reliable single-connection download.
 VAE_DEST="${MODELS_DIR}/vae/ae.safetensors"
+VAE_URL="https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors"
 VAE_EXPECTED_SIZE=335304388
+NEED_VAE_DOWNLOAD=false
 if [ -f "$VAE_DEST" ]; then
     VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
     if [ "$VAE_SIZE" -ne "$VAE_EXPECTED_SIZE" ]; then
-        echo "  [FIX] ae.safetensors is wrong model (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
+        echo "  [FIX] ae.safetensors is wrong model or corrupted (${VAE_SIZE} bytes, expected ${VAE_EXPECTED_SIZE}). Deleting..."
         rm -f "$VAE_DEST"
+        NEED_VAE_DOWNLOAD=true
+    else
+        echo "  [SKIP] ae.safetensors correct ($(numfmt --to=iec $VAE_SIZE 2>/dev/null || echo ${VAE_SIZE}B))"
+    fi
+else
+    NEED_VAE_DOWNLOAD=true
+fi
+if [ "$NEED_VAE_DOWNLOAD" = true ]; then
+    echo "  [DOWNLOAD] ae.safetensors via Python (single-connection, handles redirects)..."
+    python3 -c "
+import urllib.request, os, sys
+url = '$VAE_URL'
+dest = '$VAE_DEST'
+try:
+    urllib.request.urlretrieve(url, dest)
+    size = os.path.getsize(dest)
+    print(f'  [OK] ae.safetensors downloaded ({size} bytes)')
+except Exception as e:
+    print(f'  [ERROR] Download failed: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+    if [ -f "$VAE_DEST" ]; then
+        VAE_SIZE=$(stat -c%s "$VAE_DEST" 2>/dev/null || echo "0")
+        if [ "$VAE_SIZE" -lt 300000000 ]; then
+            echo "  [ERROR] ae.safetensors too small after download (${VAE_SIZE} bytes), removing..."
+            rm -f "$VAE_DEST"
+        fi
     fi
 fi
-# Use same download_if_missing function that works for all other models
-download_if_missing \
-    "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/vae/ae.safetensors" \
-    "${MODELS_DIR}/vae/ae.safetensors"
 # Clean up old renamed copies from previous fix attempts
 rm -f "${MODELS_DIR}/vae/ae_zimage.safetensors" 2>/dev/null || true
 rm -f "${MODELS_DIR}/vae/ae_flux_zimage.safetensors" 2>/dev/null || true
