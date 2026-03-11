@@ -231,10 +231,10 @@ download_all_models() {
             "$DIFF_DIR" "flux-2-klein-9b-fp8.safetensors" 9000000000
     fi
 
-    # Flux Klein text encoder - Qwen 3 8B FP8 mixed (~4.5 GB)
+    # Flux Klein text encoder - Qwen 3 8B FP8 mixed (~8.07 GB)
     download_model \
         "https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors" \
-        "$TE_DIR" "qwen_3_8b_fp8mixed.safetensors" 4000000000
+        "$TE_DIR" "qwen_3_8b_fp8mixed.safetensors" 8600000000
 
     # Flux2 VAE (~250 MB)
     download_model \
