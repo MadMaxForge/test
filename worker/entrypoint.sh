@@ -371,12 +371,25 @@ sync_symlinks() {
 sync_symlinks
 
 # ============================================================
-# Step 8: Download models (blocking - must complete before handler)
+# Step 8: Download models in BACKGROUND
+# RunPod kills workers that take too long to initialize (~15 min).
+# Models are 40GB+ and download at ~1GB/10min = too slow for foreground.
+# Start downloads in background, then start worker immediately.
+# Worker will be "ready" and accept jobs. If models aren't done yet,
+# ComfyUI will report missing model errors (job can be retried).
 # ============================================================
 if [ -d "$VOLUME_ROOT" ]; then
-    echo "[entrypoint] Starting model downloads (blocking)..."
-    download_all_models 2>&1 | tee /var/log/model-downloads.log
-    echo "[entrypoint] Model downloads complete."
+    echo "[entrypoint] Starting model downloads in background..."
+    (
+        download_all_models 2>&1 | tee /var/log/model-downloads.log
+        echo "[entrypoint] [BACKGROUND] Model downloads complete at $(date -u)"
+    ) &
+    DOWNLOAD_PID=$!
+    echo "[entrypoint] Download PID: $DOWNLOAD_PID"
+    
+    # Give downloads a head start (30 seconds) to check volume and skip existing files
+    sleep 30
+    echo "[entrypoint] Background downloads running, proceeding to start worker..."
 else
     echo "[entrypoint] WARNING: No Network Volume at $VOLUME_ROOT"
 fi
@@ -385,4 +398,4 @@ fi
 # Step 9: Start worker via /start.sh
 # ============================================================
 echo "[entrypoint] Setup complete. Starting worker..."
-exec /start.sh
+/start.sh
