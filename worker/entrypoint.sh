@@ -193,10 +193,15 @@ download_all_models() {
         "https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v/resolve/main/loras/Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors" \
         "$LORA_DIR" "Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors" 700000000
 
-    # VitPose H wholebody ONNX model
+    # VitPose H wholebody ONNX model (420 KB model + 2.55 GB data file)
     download_model \
         "https://huggingface.co/Kijai/vitpose_comfy/resolve/main/onnx/vitpose_h_wholebody_model.onnx" \
-        "$DET_DIR" "vitpose_h_wholebody_model.onnx" 1000000
+        "$DET_DIR" "vitpose_h_wholebody_model.onnx" 100000
+
+    # VitPose H wholebody external data (required by ONNX model)
+    download_model \
+        "https://huggingface.co/Kijai/vitpose_comfy/resolve/main/onnx/vitpose_h_wholebody_data.bin" \
+        "$DET_DIR" "vitpose_h_wholebody_data.bin" 2000000000
 
     # YOLOv10m detection model
     download_model \
