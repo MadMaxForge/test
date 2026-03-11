@@ -30,7 +30,9 @@ if [ -d "$COMFYUI_DIR/.git" ]; then
     echo "[entrypoint] ComfyUI before: $BEFORE_VER"
     cd "$COMFYUI_DIR"
     git checkout -- . 2>/dev/null || true
-    git pull --ff-only 2>&1 | tail -5 || true
+    git fetch origin 2>&1 | tail -3 || true
+    MAIN_BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}' || echo "master")
+    git merge "origin/$MAIN_BRANCH" --ff-only 2>&1 | tail -5 || true
     pip install -r "$COMFYUI_DIR/requirements.txt" --quiet --no-cache-dir 2>&1 | tail -3 || true
     AFTER_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     echo "[entrypoint] ComfyUI after: $AFTER_VER"
