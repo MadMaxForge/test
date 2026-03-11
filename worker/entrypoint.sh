@@ -171,6 +171,65 @@ else:
 " 2>&1 || true
 echo "[entrypoint] ComfyUI update complete."
 
+# ============================================================
+# CRITICAL FIX: Patch comfy/ops.py to fix utf-32-be decode error
+# The issue: comfy/ops.py does json.loads(tensor.numpy().tobytes())
+# on comfy_quant tensors. When the tensor bytes start with \x00\x00\x00
+# (e.g., wider dtype storage), Python's json.loads auto-detects UTF-32-BE
+# encoding and fails with "truncated data" error.
+# Fix: Explicitly decode bytes as utf-8 (stripping null bytes) before json.loads
+# ============================================================
+OPS_FILE="/comfyui/comfy/ops.py"
+if [ -f "$OPS_FILE" ]; then
+    echo "[entrypoint] Patching comfy/ops.py to fix utf-32-be comfy_quant decode..."
+    python3 << 'OPS_PATCH_EOF'
+import re
+
+ops_path = '/comfyui/comfy/ops.py'
+with open(ops_path) as f:
+    content = f.read()
+
+# Find and fix the problematic line:
+#   layer_conf = json.loads(layer_conf.numpy().tobytes())
+# Replace with explicit utf-8 decode:
+#   _raw = layer_conf.numpy().tobytes()
+#   _raw = bytes(b for b in _raw if b != 0)  # strip null padding
+#   layer_conf = json.loads(_raw.decode('utf-8'))
+
+old_pattern = 'layer_conf = json.loads(layer_conf.numpy().tobytes())'
+if old_pattern in content:
+    new_code = '''_raw = layer_conf.numpy().tobytes()
+                    _raw = bytes(b for b in _raw if b != 0)  # strip null padding from wider dtype
+                    layer_conf = json.loads(_raw.decode('utf-8'))'''
+    content = content.replace(old_pattern, new_code)
+    with open(ops_path, 'w') as f:
+        f.write(content)
+    print('[entrypoint] PATCHED comfy/ops.py: json.loads now uses explicit utf-8 decode')
+else:
+    # Check if already patched or different format
+    if '_raw = layer_conf.numpy().tobytes()' in content:
+        print('[entrypoint] comfy/ops.py already patched')
+    else:
+        # Try regex for any whitespace variations
+        pattern = r'layer_conf\s*=\s*json\.loads\(layer_conf\.numpy\(\)\.tobytes\(\)\)'
+        match = re.search(pattern, content)
+        if match:
+            new_code = '''_raw = layer_conf.numpy().tobytes()
+                    _raw = bytes(b for b in _raw if b != 0)
+                    layer_conf = json.loads(_raw.decode('utf-8'))'''
+            content = content[:match.start()] + new_code + content[match.end():]
+            with open(ops_path, 'w') as f:
+                f.write(content)
+            print('[entrypoint] PATCHED comfy/ops.py (regex match)')
+        else:
+            print('[entrypoint] WARNING: Could not find json.loads(tobytes()) pattern in comfy/ops.py')
+            # Log the relevant lines for debugging
+            for i, line in enumerate(content.split('\n')):
+                if 'comfy_quant' in line or 'tobytes' in line:
+                    print(f'  Line {i+1}: {line.strip()}')
+OPS_PATCH_EOF
+fi
+
 # Install aria2 if not present (base image may not have it)
 if ! command -v aria2c &>/dev/null; then
     echo "[entrypoint] Installing aria2..."
