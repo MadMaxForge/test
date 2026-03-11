@@ -189,7 +189,7 @@ async def generate_image(
 
 async def wait_for_image(
     runpod_job_id: str,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 600,
     poll_interval: int = 5,
 ) -> dict:
     """Poll RunPod until the z-image job completes.
