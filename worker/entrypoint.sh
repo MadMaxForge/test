@@ -45,6 +45,15 @@ install_node() {
 echo "[entrypoint] Checking custom nodes..."
 mkdir -p "$COMFYUI_NODES"
 
+# ============================================================
+# Update ComfyUI to latest version (required for flux2 CLIPLoader support)
+# The base image may have an older version that doesn't support flux2 type
+# ============================================================
+echo "[entrypoint] Updating ComfyUI to latest version..."
+cd /comfyui && git pull --ff-only 2>&1 | tail -5 || echo "[entrypoint] WARNING: ComfyUI update failed, using base image version"
+pip install -r /comfyui/requirements.txt --quiet --no-cache-dir 2>&1 | tail -3 || true
+echo "[entrypoint] ComfyUI updated."
+
 # Install aria2 if not present (base image may not have it)
 if ! command -v aria2c &>/dev/null; then
     echo "[entrypoint] Installing aria2..."
