@@ -162,6 +162,27 @@ if os.path.exists(QWEN_PATH):
             keys = list(f.keys())
             print(f'[entrypoint] qwen tensor count: {len(keys)}')
             print(f'[entrypoint] qwen first 5 tensors: {keys[:5]}')
+            # Diagnostic: check comfy_quant tensor dtype and contents
+            quant_keys = [k for k in keys if 'comfy_quant' in k]
+            print(f'[entrypoint] comfy_quant tensors: {len(quant_keys)}')
+            if quant_keys:
+                t = f.get_tensor(quant_keys[0])
+                print(f'[entrypoint] comfy_quant[0] key: {quant_keys[0]}')
+                print(f'[entrypoint] comfy_quant[0] dtype: {t.dtype}, shape: {t.shape}, numel: {t.numel()}')
+                raw = t.numpy().tobytes()
+                print(f'[entrypoint] comfy_quant[0] tobytes len: {len(raw)}, first 40: {raw[:40]}')
+                # Try extracting values as list of ints
+                vals = t.tolist()
+                print(f'[entrypoint] comfy_quant[0] tolist first 40: {vals[:40]}')
+                byte_vals = bytes([v & 0xFF for v in vals])
+                print(f'[entrypoint] comfy_quant[0] as bytes: {byte_vals[:60]}')
+                try:
+                    decoded = byte_vals.decode('utf-8')
+                    import json as json_mod
+                    parsed = json_mod.loads(decoded)
+                    print(f'[entrypoint] comfy_quant[0] parsed JSON: {parsed}')
+                except Exception as e2:
+                    print(f'[entrypoint] comfy_quant[0] decode error: {e2}')
         print('[entrypoint] qwen safetensors pre-flight: OK')
     except Exception as e:
         print(f'[entrypoint] qwen safetensors pre-flight FAILED: {e}')
@@ -197,35 +218,57 @@ with open(ops_path) as f:
 #   layer_conf = json.loads(_raw.decode('utf-8'))
 
 old_pattern = 'layer_conf = json.loads(layer_conf.numpy().tobytes())'
-if old_pattern in content:
-    new_code = '''_raw = layer_conf.numpy().tobytes()
+# Also check for already-patched version from previous attempt
+already_patched = '_raw = layer_conf.numpy().tobytes()' in content
+
+if already_patched:
+    # Remove previous broken patch and re-apply correct one
+    # Find the 3-line patch block and replace it
+    content = content.replace(
+        '''_raw = layer_conf.numpy().tobytes()
                     _raw = bytes(b for b in _raw if b != 0)  # strip null padding from wider dtype
-                    layer_conf = json.loads(_raw.decode('utf-8'))'''
+                    layer_conf = json.loads(_raw.decode('utf-8'))''',
+        old_pattern
+    )
+    content = content.replace(
+        '''_raw = layer_conf.numpy().tobytes()
+                    _raw = bytes(b for b in _raw if b != 0)
+                    layer_conf = json.loads(_raw.decode('utf-8'))''',
+        old_pattern
+    )
+    print('[entrypoint] Removed previous broken patch, re-applying correct one')
+
+if old_pattern in content:
+    # The correct fix: use tolist() to get individual int values, then convert to bytes
+    # This handles wider dtypes (int32, float32) where tobytes() includes padding
+    new_code = '''# SCAIL fix: handle comfy_quant tensors stored in wider dtypes
+                    _vals = layer_conf.flatten().tolist()
+                    _byte_vals = bytes([int(v) & 0xFF for v in _vals])
+                    layer_conf = json.loads(_byte_vals.decode('utf-8'))'''
     content = content.replace(old_pattern, new_code)
     with open(ops_path, 'w') as f:
         f.write(content)
-    print('[entrypoint] PATCHED comfy/ops.py: json.loads now uses explicit utf-8 decode')
+    print('[entrypoint] PATCHED comfy/ops.py: using tolist() for proper dtype handling')
 else:
-    # Check if already patched or different format
-    if '_raw = layer_conf.numpy().tobytes()' in content:
-        print('[entrypoint] comfy/ops.py already patched')
+    if '_byte_vals' in content:
+        print('[entrypoint] comfy/ops.py already patched with correct fix')
     else:
         # Try regex for any whitespace variations
         pattern = r'layer_conf\s*=\s*json\.loads\(layer_conf\.numpy\(\)\.tobytes\(\)\)'
         match = re.search(pattern, content)
         if match:
-            new_code = '''_raw = layer_conf.numpy().tobytes()
-                    _raw = bytes(b for b in _raw if b != 0)
-                    layer_conf = json.loads(_raw.decode('utf-8'))'''
+            new_code = '''# SCAIL fix: handle comfy_quant tensors stored in wider dtypes
+                    _vals = layer_conf.flatten().tolist()
+                    _byte_vals = bytes([int(v) & 0xFF for v in _vals])
+                    layer_conf = json.loads(_byte_vals.decode('utf-8'))'''
             content = content[:match.start()] + new_code + content[match.end():]
             with open(ops_path, 'w') as f:
                 f.write(content)
-            print('[entrypoint] PATCHED comfy/ops.py (regex match)')
+            print('[entrypoint] PATCHED comfy/ops.py (regex match, tolist fix)')
         else:
             print('[entrypoint] WARNING: Could not find json.loads(tobytes()) pattern in comfy/ops.py')
-            # Log the relevant lines for debugging
             for i, line in enumerate(content.split('\n')):
-                if 'comfy_quant' in line or 'tobytes' in line:
+                if 'comfy_quant' in line or 'tobytes' in line or '_byte_vals' in line:
                     print(f'  Line {i+1}: {line.strip()}')
 OPS_PATCH_EOF
 fi
