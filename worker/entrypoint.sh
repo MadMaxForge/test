@@ -93,18 +93,10 @@ background_setup() {
         apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
     fi
 
-    # 2b. Update ComfyUI
+    # 2b. ComfyUI version check (NOT updating - latest git breaks with ImportError on install_util)
     if [ -d "$COMFYUI_DIR/.git" ]; then
-        BEFORE_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        echo "[bg] ComfyUI before: $BEFORE_VER"
-        cd "$COMFYUI_DIR"
-        git checkout -- . 2>/dev/null || true
-        git fetch origin 2>&1 | tail -3 || true
-        MAIN_BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}' || echo "master")
-        git merge "origin/$MAIN_BRANCH" --ff-only 2>&1 | tail -5 || true
-        pip install -r "$COMFYUI_DIR/requirements.txt" --quiet --no-cache-dir 2>&1 | tail -3 || true
-        AFTER_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        echo "[bg] ComfyUI after: $AFTER_VER"
+        CUR_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        echo "[bg] ComfyUI version: $CUR_VER (using base image version, no update)"
     fi
 
     # 2c. Upgrade critical packages for flux2/qwen3 support
