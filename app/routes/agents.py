@@ -249,6 +249,7 @@ class DemoPipelineRequest(BaseModel):
         "casual bedroom selfie with neon lights",
         description="Scene concept for image generation",
     )
+    num_images: int = Field(1, ge=1, le=6, description="Number of images (1=single, 2+=carousel)")
     send_to_telegram: bool = Field(True, description="Send preview to Telegram")
 
 
@@ -267,7 +268,7 @@ async def demo_pipeline(request: DemoPipelineRequest, background_tasks: Backgrou
     # Create task
     task = orchestrator.create_task(
         character=request.character,
-        num_images=1,
+        num_images=request.num_images,
     )
 
     # Run in background
@@ -277,6 +278,7 @@ async def demo_pipeline(request: DemoPipelineRequest, background_tasks: Backgrou
         scene_idea=request.scene_idea,
         guide=guide,
         send_to_telegram=request.send_to_telegram,
+        num_images=request.num_images,
     )
 
     return {
@@ -291,129 +293,162 @@ async def _run_demo_pipeline(
     scene_idea: str,
     guide: dict,
     send_to_telegram: bool = True,
+    num_images: int = 1,
     max_qc_retries: int = 2,
 ) -> None:
     """Execute demo pipeline in background.
 
-    Flow: Generate prompt → Generate image → QC check → Retry if QC fails
+    Flow: Generate prompt(s) → Generate image(s) → QC check each → Retry if QC fails
           → Generate caption/hashtags → Send to Telegram.
+
+    Supports single image or carousel (num_images > 1).
     """
     task_id = task.task_id
 
     try:
-        # Step 1: Generate prompt
-        logger.info(f"[demo:{task_id}] Step 1: Generating prompt for scene='{scene_idea}'")
-        orchestrator._update_task(task_id, status="generating_prompt", current_step="Generating prompt via LLM")
-        prompt = await creative_agent.generate_prompt(
-            scene_idea=scene_idea,
-            brand_guide=guide,
+        # Step 1: Generate prompts — one per image, with variety
+        logger.info(f"[demo:{task_id}] Step 1: Generating {num_images} prompt(s) for scene='{scene_idea}'")
+        orchestrator._update_task(
+            task_id, status="generating_prompt",
+            current_step=f"Generating {num_images} prompt(s) via LLM",
         )
-        logger.info(f"[demo:{task_id}] Prompt generated ({len(prompt)} chars)")
 
-        # Step 2-4: Generate image + QC with retries
-        image_data = None
-        qc_result = None
-        best_image = None
-        best_qc_score = 0
-
-        for attempt in range(1, max_qc_retries + 1):
-            # Step 2: Generate image
-            logger.info(f"[demo:{task_id}] Step 2: Generating image (attempt {attempt}/{max_qc_retries})")
-            orchestrator._update_task(
-                task_id, status="generating_image",
-                current_step=f"Generating image (attempt {attempt}/{max_qc_retries})",
-            )
-            job_info = await creative_agent.generate_image(
-                prompt=prompt,
+        prompts: list[str] = []
+        if num_images == 1:
+            prompt = await creative_agent.generate_prompt(
+                scene_idea=scene_idea,
                 brand_guide=guide,
             )
-            logger.info(f"[demo:{task_id}] RunPod job submitted: {job_info.get('runpod_job_id')}")
+            prompts.append(prompt)
+        else:
+            # Generate varied prompts for carousel
+            variations = [
+                scene_idea,
+                f"{scene_idea}, different angle and outfit",
+                f"{scene_idea}, close-up portrait shot",
+                f"{scene_idea}, full body shot with different pose",
+                f"{scene_idea}, candid style with natural lighting",
+                f"{scene_idea}, dramatic lighting and moody atmosphere",
+            ]
+            for i in range(num_images):
+                variation = variations[i] if i < len(variations) else f"{scene_idea}, variation {i + 1}"
+                p = await creative_agent.generate_prompt(
+                    scene_idea=variation,
+                    brand_guide=guide,
+                )
+                prompts.append(p)
+                logger.info(f"[demo:{task_id}] Prompt {i + 1}/{num_images} generated ({len(p)} chars)")
 
-            # Step 3: Wait for image
-            orchestrator._update_task(task_id, current_step=f"Waiting for RunPod job {job_info['runpod_job_id']}")
-            result = await creative_agent.wait_for_image(
-                runpod_job_id=job_info["runpod_job_id"],
-                timeout_seconds=300,
-            )
+        # Step 2-4: Generate images + QC with retries (for each prompt)
+        all_images: list[dict] = []
+        all_qc_results: list[dict] = []
 
-            if result["status"] != "completed":
-                logger.warning(f"[demo:{task_id}] Image generation failed: {result.get('error')}")
-                continue
+        for img_idx, prompt in enumerate(prompts):
+            image_data = None
+            qc_result = None
+            best_image = None
+            best_qc_score = 0
+            best_qc: dict = {}
 
-            # Step 4: Extract image
-            output = result.get("output", {})
-            candidate = creative_agent._extract_image_from_output(output)
+            for attempt in range(1, max_qc_retries + 1):
+                step_label = f"image {img_idx + 1}/{num_images}" if num_images > 1 else "image"
+                logger.info(f"[demo:{task_id}] Generating {step_label} (attempt {attempt}/{max_qc_retries})")
+                orchestrator._update_task(
+                    task_id, status="generating_image",
+                    current_step=f"Generating {step_label} (attempt {attempt}/{max_qc_retries})",
+                )
+                job_info = await creative_agent.generate_image(
+                    prompt=prompt,
+                    brand_guide=guide,
+                )
+                logger.info(f"[demo:{task_id}] RunPod job submitted: {job_info.get('runpod_job_id')}")
 
-            if not candidate or not candidate.get("base64"):
-                logger.warning(f"[demo:{task_id}] Could not extract image from output")
-                continue
-
-            # Step 4b: QC check
-            logger.info(f"[demo:{task_id}] Step 4: Running QC check (attempt {attempt})")
-            orchestrator._update_task(
-                task_id, status="quality_check",
-                current_step=f"QC check (attempt {attempt}/{max_qc_retries})",
-            )
-            qc_result = await creative_agent.quality_check(
-                image_base64=candidate["base64"],
-                original_prompt=prompt,
-                brand_guide=guide,
-            )
-
-            score = qc_result.get("score", 0)
-            passed = qc_result.get("passed", False)
-            issues = qc_result.get("issues", [])
-            logger.info(
-                f"[demo:{task_id}] QC result: score={score}, passed={passed}, "
-                f"issues={issues}"
-            )
-
-            # Keep track of best image
-            if score > best_qc_score:
-                best_qc_score = score
-                best_image = candidate
-                best_qc = qc_result
-
-            if passed:
-                logger.info(f"[demo:{task_id}] QC passed with score {score}!")
-                image_data = candidate
-                break
-            else:
-                logger.info(
-                    f"[demo:{task_id}] QC rejected (score {score}): {issues}. "
-                    f"{'Retrying...' if attempt < max_qc_retries else 'No more retries.'}"
+                orchestrator._update_task(task_id, current_step=f"Waiting for RunPod job {job_info['runpod_job_id']}")
+                result = await creative_agent.wait_for_image(
+                    runpod_job_id=job_info["runpod_job_id"],
+                    timeout_seconds=300,
                 )
 
-        # If no image passed QC, use the best one and notify user
-        if image_data is None:
-            if best_image is not None:
+                if result["status"] != "completed":
+                    logger.warning(f"[demo:{task_id}] Image generation failed: {result.get('error')}")
+                    continue
+
+                output = result.get("output", {})
+                candidate = creative_agent._extract_image_from_output(output)
+
+                if not candidate or not candidate.get("base64"):
+                    logger.warning(f"[demo:{task_id}] Could not extract image from output")
+                    continue
+
+                # QC check
+                logger.info(f"[demo:{task_id}] Running QC for {step_label} (attempt {attempt})")
+                orchestrator._update_task(
+                    task_id, status="quality_check",
+                    current_step=f"QC check {step_label} (attempt {attempt}/{max_qc_retries})",
+                )
+                qc_result = await creative_agent.quality_check(
+                    image_base64=candidate["base64"],
+                    original_prompt=prompt,
+                    brand_guide=guide,
+                )
+
+                score = qc_result.get("score", 0)
+                passed = qc_result.get("passed", False)
+                issues = qc_result.get("issues", [])
+                logger.info(
+                    f"[demo:{task_id}] QC result: score={score}, passed={passed}, issues={issues}"
+                )
+
+                if score > best_qc_score:
+                    best_qc_score = score
+                    best_image = candidate
+                    best_qc = qc_result
+
+                if passed:
+                    logger.info(f"[demo:{task_id}] QC passed with score {score}!")
+                    image_data = candidate
+                    break
+                else:
+                    logger.info(
+                        f"[demo:{task_id}] QC rejected (score {score}): {issues}. "
+                        f"{'Retrying...' if attempt < max_qc_retries else 'No more retries.'}"
+                    )
+
+            # Use best image if none passed QC
+            if image_data is None and best_image is not None:
                 image_data = best_image
                 qc_result = best_qc
-                logger.warning(
-                    f"[demo:{task_id}] No image passed QC. Using best (score={best_qc_score})"
-                )
-            else:
-                orchestrator._update_task(
-                    task_id, status="failed",
-                    error="All image generation attempts failed",
-                    current_step="Image generation failed after all retries",
-                )
-                return
+                logger.warning(f"[demo:{task_id}] No image passed QC for slot {img_idx}. Using best (score={best_qc_score})")
+
+            if image_data is not None and qc_result is not None:
+                all_images.append({
+                    "index": img_idx,
+                    "theme": scene_idea,
+                    "prompt": prompt,
+                    "qc_score": qc_result.get("score", 0),
+                    "qc_passed": qc_result.get("passed", False),
+                    "qc_issues": qc_result.get("issues", []),
+                    "image_base64": image_data["base64"],
+                })
+                all_qc_results.append(qc_result)
+
+        if not all_images:
+            orchestrator._update_task(
+                task_id, status="failed",
+                error="All image generation attempts failed",
+                current_step="Image generation failed after all retries",
+            )
+            return
 
         # Step 5: Generate caption + hashtags
-        logger.info(f"[demo:{task_id}] Step 5: Generating caption + hashtags")
+        logger.info(f"[demo:{task_id}] Step 5: Generating caption + hashtags for {len(all_images)} images")
         orchestrator._update_task(task_id, status="assembling_post", current_step="Generating caption and hashtags")
+
         carousel_data = {
-            "images": [{
-                "index": 0,
-                "theme": scene_idea,
-                "prompt": prompt,
-                "qc_score": qc_result.get("score", 0) if qc_result else 0,
-                "image_base64": image_data["base64"],
-            }],
+            "images": all_images,
             "caption": "",
             "hashtags": [],
-            "carousel_order": [0],
+            "carousel_order": list(range(len(all_images))),
         }
 
         post_package = await publish_agent.assemble_post(
@@ -421,15 +456,23 @@ async def _run_demo_pipeline(
             brand_guide=guide,
         )
 
-        # Attach QC info to post package
-        post_package["qc_passed"] = qc_result.get("passed", False) if qc_result else False
-        post_package["qc_score"] = qc_result.get("score", 0) if qc_result else 0
-        post_package["qc_issues"] = qc_result.get("issues", []) if qc_result else []
-        post_package["qc_feedback"] = qc_result.get("feedback", "") if qc_result else ""
+        # Attach aggregate QC info to post package
+        qc_scores = [qc.get("score", 0) for qc in all_qc_results]
+        any_passed = any(qc.get("passed", False) for qc in all_qc_results)
+        all_passed = all(qc.get("passed", False) for qc in all_qc_results)
+        all_issues: list[str] = []
+        for qc in all_qc_results:
+            all_issues.extend(qc.get("issues", []))
+
+        post_package["qc_passed"] = all_passed
+        post_package["qc_score"] = round(sum(qc_scores) / len(qc_scores), 1) if qc_scores else 0
+        post_package["qc_issues"] = all_issues[:10]  # Limit to 10 issues
+        best_feedback = max(all_qc_results, key=lambda q: q.get("score", 0)).get("feedback", "") if all_qc_results else ""
+        post_package["qc_feedback"] = best_feedback
 
         # Step 6: Send to Telegram
         if send_to_telegram:
-            logger.info(f"[demo:{task_id}] Step 6: Sending preview to Telegram")
+            logger.info(f"[demo:{task_id}] Step 6: Sending preview to Telegram ({len(all_images)} images)")
             orchestrator._update_task(task_id, status="sending_to_telegram", current_step="Sending preview to Telegram")
             try:
                 await telegram_bot.send_post_for_approval(post_package)
@@ -437,11 +480,10 @@ async def _run_demo_pipeline(
                     task_id, status="awaiting_approval",
                     current_step="Preview sent to Telegram — waiting for approval",
                     result={
-                        "prompt": prompt,
-                        "prompt_length": len(prompt),
+                        "prompts": prompts,
                         "caption": post_package.get("caption", ""),
                         "hashtags": post_package.get("hashtags", []),
-                        "image_count": 1,
+                        "image_count": len(all_images),
                         "qc_score": post_package.get("qc_score", 0),
                         "qc_passed": post_package.get("qc_passed", False),
                         "qc_issues": post_package.get("qc_issues", []),
@@ -454,7 +496,7 @@ async def _run_demo_pipeline(
                     current_step=f"Telegram send failed: {e}",
                     error=str(e),
                     result={
-                        "prompt": prompt,
+                        "prompts": prompts,
                         "caption": post_package.get("caption", ""),
                         "status": "telegram_failed",
                     },
@@ -464,11 +506,10 @@ async def _run_demo_pipeline(
                 task_id, status="completed",
                 current_step="Demo pipeline complete (no Telegram)",
                 result={
-                    "prompt": prompt,
-                    "prompt_length": len(prompt),
+                    "prompts": prompts,
                     "caption": post_package.get("caption", ""),
                     "hashtags": post_package.get("hashtags", []),
-                    "image_count": 1,
+                    "image_count": len(all_images),
                     "qc_score": post_package.get("qc_score", 0),
                     "qc_passed": post_package.get("qc_passed", False),
                     "status": "completed",

@@ -2,6 +2,9 @@
 
 Uses Pillow to compose multiple images into grid layouts, add borders,
 and create Instagram-ready carousel previews.
+
+Also integrates Nano Banana (Gemini 3.1 Flash Image) via OpenRouter
+for AI-powered carousel slide creation with text overlays.
 """
 
 import base64
@@ -9,9 +12,15 @@ import io
 import logging
 from typing import Optional
 
+import httpx
 from PIL import Image, ImageDraw, ImageFont
 
+from app.agents import llm_client
+
 logger = logging.getLogger(__name__)
+
+# Nano Banana = Gemini 3.1 Flash Image on OpenRouter
+MODEL_NANO_BANANA = "google/gemini-3.1-flash-image-preview"
 
 # Instagram carousel aspect ratio: 1080x1350 (4:5 portrait)
 CAROUSEL_WIDTH = 1080
@@ -225,3 +234,174 @@ def create_single_preview(
         img = img.convert("RGB")
 
     return encode_image(img)
+
+
+# ---------------------------------------------------------------------------
+# Nano Banana (Gemini 3.1 Flash Image) — AI-powered carousel slide creation
+# ---------------------------------------------------------------------------
+
+async def create_carousel_slide_ai(
+    source_image_base64: str,
+    slide_instruction: str,
+    style: str = "instagram carousel slide",
+) -> Optional[str]:
+    """Use Nano Banana (Gemini 3.1 Flash Image) to create a carousel slide.
+
+    Takes a source photo and creates a styled carousel slide with text,
+    effects, or transformations applied by the AI vision model.
+
+    Args:
+        source_image_base64: Base64-encoded source image.
+        slide_instruction: What to create (e.g. "Add motivational quote overlay",
+            "Create a collage with this photo", "Apply vintage filter and add text").
+        style: Overall style guide.
+
+    Returns:
+        Base64-encoded result image, or None if generation failed.
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"You are creating an {style}. "
+                        f"Task: {slide_instruction}\n\n"
+                        "Output ONLY the modified image. "
+                        "Make it visually stunning and Instagram-ready. "
+                        "Use 1080x1350 portrait aspect ratio (4:5)."
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{source_image_base64}",
+                    },
+                },
+            ],
+        }
+    ]
+
+    try:
+        api_key = llm_client._get_api_key()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/MadMaxForge/test",
+            "X-Title": "Instagram Agent System",
+        }
+        payload = {
+            "model": MODEL_NANO_BANANA,
+            "messages": messages,
+            "max_tokens": 4096,
+            "temperature": 0.7,
+        }
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            logger.info(f"Nano Banana request: {slide_instruction[:80]}...")
+            resp = await client.post(
+                f"{llm_client.OPENROUTER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                logger.error(f"Nano Banana API error {resp.status_code}: {resp.text[:300]}")
+                return None
+            data = resp.json()
+
+        choices = data.get("choices", [])
+        if not choices:
+            logger.warning("Nano Banana: no choices in response")
+            return None
+
+        msg = choices[0].get("message", {})
+        content = msg.get("content")
+
+        # Gemini image models may return inline image data
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            # Extract base64 from data URL
+                            b64 = url.split(",", 1)[-1] if "," in url else ""
+                            if b64:
+                                logger.info(f"Nano Banana: got image ({len(b64)} chars b64)")
+                                return b64
+                    elif part.get("type") == "text":
+                        # Check if text contains base64 image data
+                        text = part.get("text", "")
+                        if len(text) > 1000 and all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n" for c in text[:100]):
+                            logger.info(f"Nano Banana: got base64 text ({len(text)} chars)")
+                            return text.replace("\n", "")
+
+        # If content is a string, it might be a text response (not image)
+        if isinstance(content, str):
+            logger.info(f"Nano Banana: text response ({len(content)} chars), no image generated")
+
+        return None
+
+    except Exception as e:
+        logger.error(f"Nano Banana error: {e}")
+        return None
+
+
+async def create_carousel_from_photos(
+    photos_base64: list[str],
+    slide_instructions: Optional[list[str]] = None,
+    fallback_to_pillow: bool = True,
+) -> dict:
+    """Create a full carousel from source photos using Nano Banana.
+
+    For each photo, either applies an AI transformation or falls back
+    to Pillow-based composition.
+
+    Args:
+        photos_base64: List of base64-encoded source photos.
+        slide_instructions: Per-slide instructions for Nano Banana.
+            If None, uses default carousel styling.
+        fallback_to_pillow: If True, use Pillow grid if AI fails.
+
+    Returns:
+        dict with 'slides' (list of base64 images), 'preview' (grid base64),
+        'method' ('nano_banana' or 'pillow').
+    """
+    if not slide_instructions:
+        slide_instructions = [
+            f"Create Instagram carousel slide {i + 1}. "
+            "Keep the photo as the main element. "
+            "Add subtle aesthetic border and slide number."
+            for i in range(len(photos_base64))
+        ]
+
+    # Pad instructions to match photos
+    while len(slide_instructions) < len(photos_base64):
+        slide_instructions.append(slide_instructions[-1] if slide_instructions else "Style this photo for Instagram")
+
+    slides: list[str] = []
+    method = "nano_banana"
+
+    for i, (photo_b64, instruction) in enumerate(zip(photos_base64, slide_instructions)):
+        logger.info(f"Creating carousel slide {i + 1}/{len(photos_base64)}")
+        result = await create_carousel_slide_ai(
+            source_image_base64=photo_b64,
+            slide_instruction=instruction,
+        )
+        if result:
+            slides.append(result)
+        else:
+            logger.warning(f"Nano Banana failed for slide {i + 1}, using original")
+            slides.append(photo_b64)
+            method = "pillow_fallback"
+
+    # Create grid preview
+    preview = create_carousel_preview(slides) if len(slides) > 1 else None
+
+    return {
+        "slides": slides,
+        "preview": preview,
+        "method": method,
+        "slide_count": len(slides),
+    }

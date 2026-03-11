@@ -231,6 +231,21 @@ async def run_pipeline(
             brand_guide=guide,
         )
 
+        # Attach aggregate QC info to post package
+        all_images = carousel_data.get("images", [])
+        qc_scores = [img.get("qc_score", 0) for img in all_images if img.get("qc_score")]
+        all_passed = all(img.get("qc_passed", False) for img in all_images) if all_images else False
+        all_issues: list[str] = []
+        for img in all_images:
+            fb = img.get("qc_feedback", "")
+            if fb:
+                all_issues.append(f"[{img.get('theme', 'img')}] {fb}")
+
+        post_package["qc_passed"] = all_passed
+        post_package["qc_score"] = round(sum(qc_scores) / len(qc_scores), 1) if qc_scores else 0
+        post_package["qc_issues"] = [iss for img in all_images for iss in (img.get("qc_issues") or [])]
+        post_package["qc_feedback"] = "; ".join(all_issues)[:500]
+
         # Step 4: Telegram approval
         if not skip_approval:
             _update_task(task_id, status="awaiting_approval", current_step="Sent to Telegram for approval")

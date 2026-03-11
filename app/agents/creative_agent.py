@@ -408,6 +408,7 @@ async def generate_carousel(
                     "qc_score": qc_result.get("score", 0),
                     "qc_passed": qc_result.get("passed", False),
                     "qc_feedback": qc_result.get("feedback", ""),
+                    "qc_issues": qc_result.get("issues", []),
                     "image_url": image_data.get("url"),
                     "image_base64": image_data.get("base64"),
                 }
