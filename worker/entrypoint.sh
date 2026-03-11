@@ -193,84 +193,67 @@ else:
 echo "[entrypoint] ComfyUI update complete."
 
 # ============================================================
-# CRITICAL FIX: Patch comfy/ops.py to fix utf-32-be decode error
-# The issue: comfy/ops.py does json.loads(tensor.numpy().tobytes())
-# on comfy_quant tensors. When the tensor bytes start with \x00\x00\x00
-# (e.g., wider dtype storage), Python's json.loads auto-detects UTF-32-BE
-# encoding and fails with "truncated data" error.
-# Fix: Explicitly decode bytes as utf-8 (stripping null bytes) before json.loads
+# INTEGRITY CHECK: Verify comfy_quant tensor data in qwen safetensors file
+# The utf-32-be error is caused by corrupted/truncated file where the
+# comfy_quant tensors (at ~7.7GB offset) are all zeros instead of JSON data.
+# If corrupt, delete and re-download.
 # ============================================================
-OPS_FILE="/comfyui/comfy/ops.py"
-if [ -f "$OPS_FILE" ]; then
-    echo "[entrypoint] Patching comfy/ops.py to fix utf-32-be comfy_quant decode..."
-    python3 << 'OPS_PATCH_EOF'
-import re
+QWEN_FILE="/runpod-volume/models/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+if [ -f "$QWEN_FILE" ]; then
+    echo "[entrypoint] Verifying qwen safetensors file integrity (comfy_quant data)..."
+    python3 << 'INTEGRITY_EOF'
+import struct, json, os, sys
 
-ops_path = '/comfyui/comfy/ops.py'
-with open(ops_path) as f:
-    content = f.read()
+fpath = '/runpod-volume/models/text_encoders/qwen_3_8b_fp8mixed.safetensors'
+EXPECTED_SIZE = 8664848742  # bytes from HuggingFace
 
-# Find and fix the problematic line:
-#   layer_conf = json.loads(layer_conf.numpy().tobytes())
-# Replace with explicit utf-8 decode:
-#   _raw = layer_conf.numpy().tobytes()
-#   _raw = bytes(b for b in _raw if b != 0)  # strip null padding
-#   layer_conf = json.loads(_raw.decode('utf-8'))
+actual_size = os.path.getsize(fpath)
+print(f'[entrypoint] qwen file size: {actual_size} (expected: {EXPECTED_SIZE})')
 
-old_pattern = 'layer_conf = json.loads(layer_conf.numpy().tobytes())'
-# Also check for already-patched version from previous attempt
-already_patched = '_raw = layer_conf.numpy().tobytes()' in content
+if actual_size < EXPECTED_SIZE:
+    print(f'[entrypoint] ERROR: File is truncated! {actual_size} < {EXPECTED_SIZE}')
+    print(f'[entrypoint] Deleting corrupt file for re-download...')
+    os.remove(fpath)
+    sys.exit(0)
 
-if already_patched:
-    # Remove previous broken patch and re-apply correct one
-    # Find the 3-line patch block and replace it
-    content = content.replace(
-        '''_raw = layer_conf.numpy().tobytes()
-                    _raw = bytes(b for b in _raw if b != 0)  # strip null padding from wider dtype
-                    layer_conf = json.loads(_raw.decode('utf-8'))''',
-        old_pattern
-    )
-    content = content.replace(
-        '''_raw = layer_conf.numpy().tobytes()
-                    _raw = bytes(b for b in _raw if b != 0)
-                    layer_conf = json.loads(_raw.decode('utf-8'))''',
-        old_pattern
-    )
-    print('[entrypoint] Removed previous broken patch, re-applying correct one')
+# Read header to find comfy_quant tensor location
+with open(fpath, 'rb') as f:
+    header_size = struct.unpack('<Q', f.read(8))[0]
+    header_data = f.read(header_size)
+    header = json.loads(header_data.decode('utf-8'))
+    data_start = 8 + header_size
 
-if old_pattern in content:
-    # The correct fix: use tolist() to get individual int values, then convert to bytes
-    # This handles wider dtypes (int32, float32) where tobytes() includes padding
-    new_code = '''# SCAIL fix: handle comfy_quant tensors stored in wider dtypes
-                    _vals = layer_conf.flatten().tolist()
-                    _byte_vals = bytes([int(v) & 0xFF for v in _vals])
-                    layer_conf = json.loads(_byte_vals.decode('utf-8'))'''
-    content = content.replace(old_pattern, new_code)
-    with open(ops_path, 'w') as f:
-        f.write(content)
-    print('[entrypoint] PATCHED comfy/ops.py: using tolist() for proper dtype handling')
-else:
-    if '_byte_vals' in content:
-        print('[entrypoint] comfy/ops.py already patched with correct fix')
-    else:
-        # Try regex for any whitespace variations
-        pattern = r'layer_conf\s*=\s*json\.loads\(layer_conf\.numpy\(\)\.tobytes\(\)\)'
-        match = re.search(pattern, content)
-        if match:
-            new_code = '''# SCAIL fix: handle comfy_quant tensors stored in wider dtypes
-                    _vals = layer_conf.flatten().tolist()
-                    _byte_vals = bytes([int(v) & 0xFF for v in _vals])
-                    layer_conf = json.loads(_byte_vals.decode('utf-8'))'''
-            content = content[:match.start()] + new_code + content[match.end():]
-            with open(ops_path, 'w') as f:
-                f.write(content)
-            print('[entrypoint] PATCHED comfy/ops.py (regex match, tolist fix)')
+    # Find first comfy_quant tensor
+    quant_keys = [k for k in header if 'comfy_quant' in k]
+    print(f'[entrypoint] Found {len(quant_keys)} comfy_quant tensors')
+
+    if quant_keys:
+        key = quant_keys[0]
+        info = header[key]
+        start, end = info['data_offsets']
+        size = end - start
+        file_offset = data_start + start
+        print(f'[entrypoint] Checking {key}: dtype={info["dtype"]}, offset={file_offset}, size={size}')
+
+        # Read actual tensor bytes
+        f.seek(file_offset)
+        tensor_bytes = f.read(size)
+        print(f'[entrypoint] Tensor bytes: {tensor_bytes}')
+
+        if tensor_bytes == b'\x00' * size:
+            print(f'[entrypoint] ERROR: comfy_quant data is ALL ZEROS - file is corrupt!')
+            print(f'[entrypoint] Deleting corrupt file for re-download...')
+            os.remove(fpath)
         else:
-            print('[entrypoint] WARNING: Could not find json.loads(tobytes()) pattern in comfy/ops.py')
-            for i, line in enumerate(content.split('\n')):
-                if 'comfy_quant' in line or 'tobytes' in line or '_byte_vals' in line:
-                    print(f'  Line {i+1}: {line.strip()}')
-OPS_PATCH_EOF
+            try:
+                parsed = json.loads(tensor_bytes)
+                print(f'[entrypoint] comfy_quant data OK: {parsed}')
+            except Exception as e:
+                print(f'[entrypoint] ERROR: comfy_quant data is not valid JSON: {e}')
+                print(f'[entrypoint] Raw bytes: {tensor_bytes[:100]}')
+                print(f'[entrypoint] Deleting corrupt file for re-download...')
+                os.remove(fpath)
+INTEGRITY_EOF
 fi
 
 # Install aria2 if not present (base image may not have it)
