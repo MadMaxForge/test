@@ -1,16 +1,21 @@
 """Shared LLM client — calls OpenRouter API (OpenAI-compatible) for all agents."""
 
+import logging
 import os
 import httpx
 import json
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Default models
 MODEL_KIMI_K2_5 = "moonshotai/kimi-k2.5"
-MODEL_GEMINI_FLASH = "google/gemini-2.5-flash-preview"
+MODEL_GEMINI_FLASH = "google/gemini-2.5-flash"
+# Non-reasoning model for simple generation (captions, hashtags, short text)
+MODEL_SIMPLE = "google/gemini-2.5-flash"
 
 
 def _get_api_key() -> str:
@@ -24,7 +29,7 @@ async def chat_completion(
     messages: list[dict],
     model: str = MODEL_KIMI_K2_5,
     temperature: float = 0.7,
-    max_tokens: int = 4096,
+    max_tokens: int = 16000,
     json_mode: bool = False,
 ) -> str:
     """Send a chat completion request to OpenRouter.
@@ -55,20 +60,37 @@ async def chat_completion(
         "X-Title": "Instagram Agent System",
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
+        logger.info(f"LLM request: model={model}, max_tokens={max_tokens}")
         resp = await client.post(
             f"{OPENROUTER_BASE_URL}/chat/completions",
             headers=headers,
             json=payload,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            logger.error(f"LLM API error {resp.status_code}: {resp.text[:500]}")
+            resp.raise_for_status()
         data = resp.json()
 
     choices = data.get("choices", [])
     if not choices:
         raise ValueError(f"No choices in LLM response: {data}")
 
-    return choices[0]["message"]["content"]
+    msg = choices[0]["message"]
+    content = msg.get("content")
+
+    # Kimi K2.5 is a reasoning model — content can be null if token budget
+    # was exhausted by reasoning. Fall back to reasoning text in that case.
+    if content is None or content.strip() == "":
+        reasoning = msg.get("reasoning") or ""
+        if reasoning:
+            logger.warning("LLM returned null content, falling back to reasoning text")
+            content = reasoning
+        else:
+            raise ValueError(f"LLM returned empty content and no reasoning: {msg}")
+
+    logger.info(f"LLM response: {len(content)} chars")
+    return content
 
 
 async def chat_completion_json(

@@ -256,23 +256,44 @@ async def quality_check(
     appearance = char.get("appearance", {})
 
     instruction = (
-        "You are a quality control agent for AI-generated Instagram images. "
-        "Rate this image on a scale of 1-10 and identify any issues.\n\n"
+        "You are an EXTREMELY STRICT quality control agent for AI-generated Instagram images. "
+        "Your job is to ensure ONLY photorealistic, artifact-free images pass. "
+        "Rate this image on a scale of 1-10 and identify ALL issues.\n\n"
         f"The image was generated from this prompt:\n{original_prompt[:500]}\n\n"
         f"Expected character appearance:\n"
         f"- Hair: {appearance.get('hair')}\n"
         f"- Face: {appearance.get('face')}\n"
         f"- Eyes: {appearance.get('eyes')}\n\n"
         f"Content restrictions: {'; '.join(restrictions)}\n\n"
-        "Check for:\n"
-        "1. Prompt accuracy: Does the image match the described scene?\n"
-        "2. Character consistency: Hair color/style, face shape, expression\n"
-        "3. Artifacts: Extra fingers, distorted face, blurry areas, text artifacts\n"
-        "4. Composition: Good framing, not cropped weirdly\n"
-        "5. Content policy: No restriction violations\n\n"
+        "CHECK STRICTLY FOR:\n"
+        "1. REALISM: Does this look like a REAL photograph taken by a camera? "
+        "If it looks AI-generated, CGI, or uncanny valley → score 4 or below\n"
+        "2. ARTIFACTS: Look carefully for:\n"
+        "   - Extra/deformed fingers, hands, or limbs\n"
+        "   - Distorted or asymmetric face features\n"
+        "   - Blurry or smudged areas\n"
+        "   - Text artifacts or random symbols\n"
+        "   - Duplicated objects (e.g. multiple monitors, repeated items)\n"
+        "   - Warped or impossible geometry in background\n"
+        "   - Unnatural skin texture or plastic-looking skin\n"
+        "   Any artifact found → subtract 3 points minimum\n"
+        "3. BACKGROUND QUALITY: Is the background realistic and coherent?\n"
+        "   - Duplicated/tiled objects (monitors, furniture) → FAIL\n"
+        "   - Impossible architecture or floating objects → FAIL\n"
+        "   - Excessive glow/bloom that hides details → subtract 2 points\n"
+        "4. CHARACTER CONSISTENCY: Hair, face, eyes match expected appearance\n"
+        "5. COMPOSITION: Natural framing like a real Instagram selfie/photo\n"
+        "6. CONTENT POLICY: No restriction violations\n\n"
+        "SCORING GUIDE:\n"
+        "- 9-10: Perfect photorealistic image, no artifacts, could pass as real photo\n"
+        "- 7-8: Very good, minor imperfections barely noticeable\n"
+        "- 5-6: Noticeable issues, clearly AI-generated\n"
+        "- 3-4: Major artifacts or unrealistic elements\n"
+        "- 1-2: Heavily distorted or broken image\n\n"
+        "BE STRICT. Most AI images should score 5-6. Only truly excellent ones get 7+.\n\n"
         "Respond in JSON format:\n"
         '{"score": 1-10, "passed": true/false (passed if score >= 7), '
-        '"issues": ["list of specific issues"], '
+        '"issues": ["list of specific issues found"], '
         '"feedback": "brief overall assessment"}'
     )
 

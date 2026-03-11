@@ -8,6 +8,8 @@ Provides endpoints to:
   - Manage rate limiter
 """
 
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -15,6 +17,9 @@ from typing import Optional
 from app.agents import brand_guide as bg
 from app.agents import orchestrator, rate_limiter
 from app.agents import creative_agent, publish_agent, telegram_bot
+from app.agents import carousel_composer
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -234,3 +239,245 @@ async def send_test_message(
         return {"status": "sent", "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------- Demo Pipeline Endpoint ----------
+
+class DemoPipelineRequest(BaseModel):
+    character: str = Field("lanna_danger", description="Brand guide character name")
+    scene_idea: str = Field(
+        "casual bedroom selfie with neon lights",
+        description="Scene concept for image generation",
+    )
+    send_to_telegram: bool = Field(True, description="Send preview to Telegram")
+
+
+@router.post("/pipeline/demo")
+async def demo_pipeline(request: DemoPipelineRequest, background_tasks: BackgroundTasks):
+    """Run a demo pipeline: generate 1 image + caption → send preview to Telegram.
+
+    Skips Instagram scraping. Generates a single image with full prompt,
+    assembles a post package, and sends it to Telegram for preview.
+    """
+    try:
+        guide = bg.load_brand_guide(request.character)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Brand guide '{request.character}' not found")
+
+    # Create task
+    task = orchestrator.create_task(
+        character=request.character,
+        num_images=1,
+    )
+
+    # Run in background
+    background_tasks.add_task(
+        _run_demo_pipeline,
+        task=task,
+        scene_idea=request.scene_idea,
+        guide=guide,
+        send_to_telegram=request.send_to_telegram,
+    )
+
+    return {
+        "task_id": task.task_id,
+        "status": "started",
+        "message": "Demo pipeline started. Poll /pipeline/tasks/{task_id} for status.",
+    }
+
+
+async def _run_demo_pipeline(
+    task: orchestrator.PipelineTask,
+    scene_idea: str,
+    guide: dict,
+    send_to_telegram: bool = True,
+    max_qc_retries: int = 2,
+) -> None:
+    """Execute demo pipeline in background.
+
+    Flow: Generate prompt → Generate image → QC check → Retry if QC fails
+          → Generate caption/hashtags → Send to Telegram.
+    """
+    task_id = task.task_id
+
+    try:
+        # Step 1: Generate prompt
+        logger.info(f"[demo:{task_id}] Step 1: Generating prompt for scene='{scene_idea}'")
+        orchestrator._update_task(task_id, status="generating_prompt", current_step="Generating prompt via LLM")
+        prompt = await creative_agent.generate_prompt(
+            scene_idea=scene_idea,
+            brand_guide=guide,
+        )
+        logger.info(f"[demo:{task_id}] Prompt generated ({len(prompt)} chars)")
+
+        # Step 2-4: Generate image + QC with retries
+        image_data = None
+        qc_result = None
+        best_image = None
+        best_qc_score = 0
+
+        for attempt in range(1, max_qc_retries + 1):
+            # Step 2: Generate image
+            logger.info(f"[demo:{task_id}] Step 2: Generating image (attempt {attempt}/{max_qc_retries})")
+            orchestrator._update_task(
+                task_id, status="generating_image",
+                current_step=f"Generating image (attempt {attempt}/{max_qc_retries})",
+            )
+            job_info = await creative_agent.generate_image(
+                prompt=prompt,
+                brand_guide=guide,
+            )
+            logger.info(f"[demo:{task_id}] RunPod job submitted: {job_info.get('runpod_job_id')}")
+
+            # Step 3: Wait for image
+            orchestrator._update_task(task_id, current_step=f"Waiting for RunPod job {job_info['runpod_job_id']}")
+            result = await creative_agent.wait_for_image(
+                runpod_job_id=job_info["runpod_job_id"],
+                timeout_seconds=300,
+            )
+
+            if result["status"] != "completed":
+                logger.warning(f"[demo:{task_id}] Image generation failed: {result.get('error')}")
+                continue
+
+            # Step 4: Extract image
+            output = result.get("output", {})
+            candidate = creative_agent._extract_image_from_output(output)
+
+            if not candidate or not candidate.get("base64"):
+                logger.warning(f"[demo:{task_id}] Could not extract image from output")
+                continue
+
+            # Step 4b: QC check
+            logger.info(f"[demo:{task_id}] Step 4: Running QC check (attempt {attempt})")
+            orchestrator._update_task(
+                task_id, status="quality_check",
+                current_step=f"QC check (attempt {attempt}/{max_qc_retries})",
+            )
+            qc_result = await creative_agent.quality_check(
+                image_base64=candidate["base64"],
+                original_prompt=prompt,
+                brand_guide=guide,
+            )
+
+            score = qc_result.get("score", 0)
+            passed = qc_result.get("passed", False)
+            issues = qc_result.get("issues", [])
+            logger.info(
+                f"[demo:{task_id}] QC result: score={score}, passed={passed}, "
+                f"issues={issues}"
+            )
+
+            # Keep track of best image
+            if score > best_qc_score:
+                best_qc_score = score
+                best_image = candidate
+                best_qc = qc_result
+
+            if passed:
+                logger.info(f"[demo:{task_id}] QC passed with score {score}!")
+                image_data = candidate
+                break
+            else:
+                logger.info(
+                    f"[demo:{task_id}] QC rejected (score {score}): {issues}. "
+                    f"{'Retrying...' if attempt < max_qc_retries else 'No more retries.'}"
+                )
+
+        # If no image passed QC, use the best one and notify user
+        if image_data is None:
+            if best_image is not None:
+                image_data = best_image
+                qc_result = best_qc
+                logger.warning(
+                    f"[demo:{task_id}] No image passed QC. Using best (score={best_qc_score})"
+                )
+            else:
+                orchestrator._update_task(
+                    task_id, status="failed",
+                    error="All image generation attempts failed",
+                    current_step="Image generation failed after all retries",
+                )
+                return
+
+        # Step 5: Generate caption + hashtags
+        logger.info(f"[demo:{task_id}] Step 5: Generating caption + hashtags")
+        orchestrator._update_task(task_id, status="assembling_post", current_step="Generating caption and hashtags")
+        carousel_data = {
+            "images": [{
+                "index": 0,
+                "theme": scene_idea,
+                "prompt": prompt,
+                "qc_score": qc_result.get("score", 0) if qc_result else 0,
+                "image_base64": image_data["base64"],
+            }],
+            "caption": "",
+            "hashtags": [],
+            "carousel_order": [0],
+        }
+
+        post_package = await publish_agent.assemble_post(
+            carousel_data=carousel_data,
+            brand_guide=guide,
+        )
+
+        # Attach QC info to post package
+        post_package["qc_passed"] = qc_result.get("passed", False) if qc_result else False
+        post_package["qc_score"] = qc_result.get("score", 0) if qc_result else 0
+        post_package["qc_issues"] = qc_result.get("issues", []) if qc_result else []
+        post_package["qc_feedback"] = qc_result.get("feedback", "") if qc_result else ""
+
+        # Step 6: Send to Telegram
+        if send_to_telegram:
+            logger.info(f"[demo:{task_id}] Step 6: Sending preview to Telegram")
+            orchestrator._update_task(task_id, status="sending_to_telegram", current_step="Sending preview to Telegram")
+            try:
+                await telegram_bot.send_post_for_approval(post_package)
+                orchestrator._update_task(
+                    task_id, status="awaiting_approval",
+                    current_step="Preview sent to Telegram — waiting for approval",
+                    result={
+                        "prompt": prompt,
+                        "prompt_length": len(prompt),
+                        "caption": post_package.get("caption", ""),
+                        "hashtags": post_package.get("hashtags", []),
+                        "image_count": 1,
+                        "qc_score": post_package.get("qc_score", 0),
+                        "qc_passed": post_package.get("qc_passed", False),
+                        "qc_issues": post_package.get("qc_issues", []),
+                        "status": "sent_to_telegram",
+                    },
+                )
+            except Exception as e:
+                orchestrator._update_task(
+                    task_id, status="completed",
+                    current_step=f"Telegram send failed: {e}",
+                    error=str(e),
+                    result={
+                        "prompt": prompt,
+                        "caption": post_package.get("caption", ""),
+                        "status": "telegram_failed",
+                    },
+                )
+        else:
+            orchestrator._update_task(
+                task_id, status="completed",
+                current_step="Demo pipeline complete (no Telegram)",
+                result={
+                    "prompt": prompt,
+                    "prompt_length": len(prompt),
+                    "caption": post_package.get("caption", ""),
+                    "hashtags": post_package.get("hashtags", []),
+                    "image_count": 1,
+                    "qc_score": post_package.get("qc_score", 0),
+                    "qc_passed": post_package.get("qc_passed", False),
+                    "status": "completed",
+                },
+            )
+
+    except Exception as e:
+        orchestrator._update_task(
+            task_id, status="failed",
+            error=str(e),
+            current_step=f"Pipeline failed: {e}",
+        )

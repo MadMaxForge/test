@@ -159,15 +159,29 @@ async def send_post_for_approval(
     images = post_package.get("images", [])
     caption = post_package.get("full_caption", post_package.get("caption", ""))
     avg_qc = post_package.get("avg_qc_score", 0)
+    qc_passed = post_package.get("qc_passed", False)
+    qc_score = post_package.get("qc_score", avg_qc)
+    qc_issues = post_package.get("qc_issues", [])
+    qc_feedback = post_package.get("qc_feedback", "")
+
+    # QC status indicator
+    qc_status = "PASSED" if qc_passed else "REJECTED (best attempt)"
+    issues_text = ""
+    if qc_issues:
+        issues_text = "\n".join(f"  - {issue}" for issue in qc_issues[:5])
+        issues_text = f"\n<b>Issues:</b>\n{issues_text}"
 
     # Header message
     header = (
         f"<b>New Post Draft</b>\n"
         f"Type: {post_package.get('type', 'single')}\n"
         f"Images: {post_package.get('image_count', len(images))}\n"
-        f"Avg QC Score: {avg_qc}/10\n"
+        f"QC: {qc_score}/10 — <b>{qc_status}</b>"
+        f"{issues_text}\n"
         f"---"
     )
+    if qc_feedback:
+        header += f"\n<i>{qc_feedback[:200]}</i>"
     await send_message(header, chat_id=chat_id)
 
     # Send each image

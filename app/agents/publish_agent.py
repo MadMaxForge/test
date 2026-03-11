@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.agents import llm_client
+from app.agents.llm_client import MODEL_SIMPLE
 from app.agents.brand_guide import get_posting_rules, get_restrictions
 
 logger = logging.getLogger(__name__)
@@ -136,8 +137,9 @@ async def generate_caption(
 
     caption = await llm_client.chat_completion(
         messages=messages,
+        model=MODEL_SIMPLE,
         temperature=0.9,
-        max_tokens=200,
+        max_tokens=500,
     )
 
     return caption.strip().strip('"')
@@ -189,8 +191,9 @@ async def generate_hashtags(
 
     raw = await llm_client.chat_completion(
         messages=messages,
+        model=MODEL_SIMPLE,
         temperature=0.6,
-        max_tokens=500,
+        max_tokens=1000,
     )
 
     # Parse array
