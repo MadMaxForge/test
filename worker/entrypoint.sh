@@ -278,15 +278,17 @@ sync_symlinks() {
 sync_symlinks
 
 # ============================================================
-# Step 2: Download models in BACKGROUND (non-blocking)
+# Step 2: Download models in FOREGROUND (blocking)
+# Models MUST be fully downloaded before handler starts,
+# otherwise safetensors files may be truncated causing
+# 'utf-32-be' decode errors in CLIPLoader
 # First run will take ~10-20 min; subsequent runs are instant
 # ============================================================
 if [ -d "$VOLUME_ROOT" ]; then
     echo "[entrypoint] Network Volume found at $VOLUME_ROOT"
-    echo "[entrypoint] Starting model downloads in background..."
-    download_all_models >> /var/log/model-downloads.log 2>&1 &
-    DOWNLOAD_PID=$!
-    echo "[entrypoint] Model download PID: $DOWNLOAD_PID (log: /var/log/model-downloads.log)"
+    echo "[entrypoint] Starting model downloads (blocking until complete)..."
+    download_all_models 2>&1 | tee /var/log/model-downloads.log
+    echo "[entrypoint] Model downloads complete."
 else
     echo "[entrypoint] WARNING: No Network Volume at $VOLUME_ROOT — models must already be in container"
 fi
