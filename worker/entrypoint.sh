@@ -50,8 +50,24 @@ mkdir -p "$COMFYUI_NODES"
 # The base image may have an older version that doesn't support flux2 type
 # ============================================================
 echo "[entrypoint] Updating ComfyUI to latest version..."
-cd /comfyui && git pull --ff-only 2>&1 | tail -5 || echo "[entrypoint] WARNING: ComfyUI update failed, using base image version"
-pip install -r /comfyui/requirements.txt --quiet --no-cache-dir 2>&1 | tail -3 || true
+COMFYUI_DIR="/comfyui"
+if [ -d "$COMFYUI_DIR/.git" ]; then
+    cd "$COMFYUI_DIR"
+    # Log current version before update
+    BEFORE_VER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "[entrypoint] ComfyUI version before update: $BEFORE_VER"
+    # Reset any local changes that might block pull
+    git checkout -- . 2>/dev/null || true
+    git pull --ff-only 2>&1 | tail -5
+    AFTER_VER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "[entrypoint] ComfyUI version after update: $AFTER_VER"
+    pip install -r "$COMFYUI_DIR/requirements.txt" --quiet --no-cache-dir 2>&1 | tail -3 || true
+else
+    echo "[entrypoint] WARNING: /comfyui is not a git repo, trying pip upgrade..."
+    pip install --upgrade comfyui 2>&1 | tail -5 || true
+fi
+# Log the ComfyUI version for debugging
+python3 -c "import importlib; m=importlib.import_module('comfy.cli_args'); print('[entrypoint] ComfyUI module loaded OK')" 2>/dev/null || true
 echo "[entrypoint] ComfyUI updated."
 
 # Install aria2 if not present (base image may not have it)
@@ -128,6 +144,36 @@ fi
 echo "[entrypoint] Custom nodes ready."
 
 # ============================================================
+# Helper: validate safetensors file header
+# Returns 0 if valid, 1 if corrupt/invalid
+# ============================================================
+validate_safetensors() {
+    local filepath="$1"
+    python3 -c "
+import struct, json, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        raw = f.read(8)
+        if len(raw) < 8:
+            print('[validate] File too small for safetensors header')
+            sys.exit(1)
+        header_size = struct.unpack('<Q', raw)[0]
+        if header_size < 2 or header_size > 200_000_000:
+            print(f'[validate] Suspicious header size: {header_size}')
+            sys.exit(1)
+        header_bytes = f.read(min(header_size, 4096))
+        # Try to decode as UTF-8 (safetensors uses UTF-8 JSON headers)
+        header_bytes.decode('utf-8')
+    print('[validate] Header OK')
+    sys.exit(0)
+except Exception as e:
+    print(f'[validate] CORRUPT: {e}')
+    sys.exit(1)
+" "$filepath" 2>&1
+    return $?
+}
+
+# ============================================================
 # Helper: download a model file if missing or incomplete
 # Usage: download_model <url> <dest_dir> <filename> <min_size>
 # ============================================================
@@ -140,16 +186,31 @@ download_model() {
 
     mkdir -p "$dest_dir"
 
+    # Check size
     if [ -f "$dest_path" ] && [ $(stat -c%s "$dest_path" 2>/dev/null || echo 0) -ge "$min_size" ]; then
-        echo "[entrypoint] OK: $filename ($(stat -c%s "$dest_path" | numfmt --to=iec))"
-        return 0
+        # For safetensors files, also validate the header
+        if echo "$filename" | grep -q '\.safetensors$'; then
+            if ! validate_safetensors "$dest_path"; then
+                echo "[entrypoint] CORRUPT safetensors detected: $filename — deleting for re-download"
+                rm -f "$dest_path"
+            else
+                echo "[entrypoint] OK: $filename ($(stat -c%s "$dest_path" | numfmt --to=iec))"
+                return 0
+            fi
+        else
+            echo "[entrypoint] OK: $filename ($(stat -c%s "$dest_path" | numfmt --to=iec))"
+            return 0
+        fi
     fi
+
+    # Delete any partial/corrupt file before downloading
+    rm -f "$dest_path"
 
     echo "[entrypoint] Downloading $filename ..."
     aria2c -x 16 -s 16 -k 20M \
         --auto-file-renaming=false \
         --allow-overwrite=true \
-        -c -d "$dest_dir" -o "$filename" \
+        -d "$dest_dir" -o "$filename" \
         --console-log-level=notice \
         --summary-interval=10 \
         "$url"
@@ -158,13 +219,14 @@ download_model() {
         echo "[entrypoint] Downloaded $filename ($(stat -c%s "$dest_path" | numfmt --to=iec))"
     else
         echo "[entrypoint] WARNING: $filename download may have failed!"
+        rm -f "$dest_path"
         DOWNLOAD_ERRORS=$((DOWNLOAD_ERRORS + 1))
     fi
 }
 
 # ============================================================
 # download_all_models: downloads all required models to volume
-# Called in background so it doesn't block handler startup
+# Called in FOREGROUND (blocking) to ensure files are complete
 # ============================================================
 download_all_models() {
     DOWNLOAD_ERRORS=0
