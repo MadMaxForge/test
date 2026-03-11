@@ -87,6 +87,12 @@ echo "[entrypoint] Phase 1 complete ($(date -u)). Starting background setup + wo
 background_setup() {
     echo "[bg] === Background setup starting at $(date -u) ==="
 
+    # CRITICAL: Wait for ComfyUI to fully start before doing ANY pip operations.
+    # pip install while ComfyUI is importing causes ImportError race conditions.
+    echo "[bg] Waiting 120s for ComfyUI to fully initialize before pip operations..."
+    sleep 120
+    echo "[bg] Wait complete, proceeding with background setup..."
+
     # 2a. Install aria2 if not present
     if ! command -v aria2c &>/dev/null; then
         echo "[bg] Installing aria2..."
@@ -99,9 +105,7 @@ background_setup() {
         echo "[bg] ComfyUI version: $CUR_VER (using base image version, no update)"
     fi
 
-    # 2c. Upgrade critical packages for flux2/qwen3 support
-    echo "[bg] Upgrading critical packages..."
-    pip install --upgrade safetensors transformers tokenizers 2>&1 | tail -5 || true
+    # 2c. (moved to after custom nodes - see 2f below)
 
     # 2d. Integrity check on qwen safetensors file
     QWEN_FILE="$VOLUME_MODELS/text_encoders/qwen_3_8b_fp8mixed.safetensors"
@@ -198,7 +202,11 @@ except Exception as e:
 
     echo "[bg] Custom nodes done. New installs: $NEW_NODES_INSTALLED"
 
-    # 2f. Download models
+    # 2f. Upgrade critical packages (AFTER custom nodes, so ComfyUI is long past startup)
+    echo "[bg] Upgrading critical packages for flux2/qwen3 support..."
+    pip install --upgrade safetensors transformers tokenizers 2>&1 | tail -5 || true
+
+    # 2g. Download models
     DOWNLOAD_ERRORS=0
 
     validate_safetensors() {
