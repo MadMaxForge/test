@@ -116,32 +116,43 @@ fi
 
 # ============================================================
 # Step 4: Install custom nodes
+# Cache on volume so they persist between worker restarts.
+# First install: clone + pip install (~10 min)
+# Subsequent starts: just symlink from volume (instant)
 # ============================================================
+VOLUME_NODES="$VOLUME_ROOT/custom_nodes"
+PIP_CACHE="$VOLUME_ROOT/pip_cache"
+mkdir -p "$VOLUME_NODES" "$PIP_CACHE" "$COMFYUI_NODES"
+
 install_node() {
     local repo_url="$1"
     local dirname="$2"
-    local node_path="$COMFYUI_NODES/$dirname"
+    local vol_node="$VOLUME_NODES/$dirname"
+    local comfy_node="$COMFYUI_NODES/$dirname"
 
-    if [ -d "$node_path" ] && [ -f "$node_path/__init__.py" -o -d "$node_path/js" -o -f "$node_path/nodes.py" ]; then
-        echo "[entrypoint] Node OK: $dirname"
+    # Check if already cached on volume
+    if [ -d "$vol_node" ] && [ -f "$vol_node/__init__.py" -o -d "$vol_node/js" -o -f "$vol_node/nodes.py" ]; then
+        # Symlink from volume to ComfyUI
+        ln -sf "$vol_node" "$comfy_node"
+        echo "[entrypoint] Node OK (cached): $dirname"
         return 0
     fi
 
     echo "[entrypoint] Installing node: $dirname ..."
-    cd "$COMFYUI_NODES"
-    rm -rf "$dirname"
-    git clone --depth 1 "$repo_url" "$dirname" 2>&1 | tail -3
-    if [ -f "$node_path/requirements.txt" ]; then
-        pip install -r "$node_path/requirements.txt" --no-cache-dir 2>&1 | tail -3
+    rm -rf "$vol_node"
+    git clone --depth 1 "$repo_url" "$vol_node" 2>&1 | tail -3
+    if [ -f "$vol_node/requirements.txt" ]; then
+        pip install -r "$vol_node/requirements.txt" --no-cache-dir 2>&1 | tail -3
     fi
-    if [ -f "$node_path/install.py" ]; then
-        cd "$node_path" && python install.py 2>&1 | tail -3 || true
+    if [ -f "$vol_node/install.py" ]; then
+        cd "$vol_node" && python install.py 2>&1 | tail -3 || true
     fi
+    # Symlink from volume to ComfyUI
+    ln -sf "$vol_node" "$comfy_node"
     echo "[entrypoint] Installed: $dirname"
 }
 
 echo "[entrypoint] Checking custom nodes..."
-mkdir -p "$COMFYUI_NODES"
 
 install_node "https://github.com/kijai/ComfyUI-WanVideoWrapper.git" "ComfyUI-WanVideoWrapper"
 install_node "https://github.com/kijai/ComfyUI-SCAIL-Pose.git" "ComfyUI-SCAIL-Pose"
@@ -158,6 +169,9 @@ python3 -c "import onnxruntime" 2>/dev/null || {
     echo "[entrypoint] Installing onnxruntime-gpu..."
     pip install onnxruntime-gpu --no-cache-dir 2>&1 | tail -3 || pip install onnxruntime --no-cache-dir 2>&1 | tail -3
 }
+
+# Also cache pip packages on volume for faster reinstalls
+export PIP_CACHE_DIR="$PIP_CACHE"
 
 echo "[entrypoint] Custom nodes ready."
 
