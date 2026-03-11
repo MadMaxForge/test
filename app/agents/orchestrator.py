@@ -329,7 +329,7 @@ async def _generate_brief_from_guide(guide: dict, num_images: int) -> dict:
                 "Output JSON with:\n"
                 "- image_plans: array of objects with full_prompt (500+ chars), theme, outfit_summary\n"
                 "- caption: short Instagram caption with emoji\n"
-                "- hashtags: array of 15-20 hashtags\n"
+                "- hashtags: array of EXACTLY 5 hashtags (no more!)\n"
                 "- carousel_order: array of indices"
             ),
         },

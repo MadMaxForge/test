@@ -149,7 +149,7 @@ async def generate_hashtags(
     images: list[dict],
     caption: str,
     brand_guide: dict,
-    count: int = 20,
+    count: int = 5,
 ) -> list[str]:
     """Generate relevant Instagram hashtags.
 
@@ -157,11 +157,14 @@ async def generate_hashtags(
         images: Generated image data.
         caption: The caption text.
         brand_guide: Character brand guide.
-        count: Number of hashtags to generate.
+        count: Number of hashtags to generate (max 5).
 
     Returns:
-        List of hashtags (with # prefix).
+        List of hashtags (with # prefix), max 5.
     """
+    # Hard cap at 5 hashtags
+    count = min(count, 5)
+
     style = brand_guide.get("style", {})
     posting = get_posting_rules(brand_guide)
     themes = [img.get("theme", "") for img in images if img.get("theme")]
@@ -170,10 +173,11 @@ async def generate_hashtags(
         {
             "role": "system",
             "content": (
-                "You are an Instagram hashtag strategist. Generate a mix of:\n"
-                "- 5 popular hashtags (100K+ posts)\n"
-                "- 10 medium hashtags (10K-100K posts)\n"
-                "- 5 niche hashtags (1K-10K posts)\n\n"
+                "You are an Instagram hashtag strategist. Generate EXACTLY 5 hashtags:\n"
+                "- 2 popular hashtags (100K+ posts)\n"
+                "- 2 medium hashtags (10K-100K posts)\n"
+                "- 1 niche hashtag (1K-10K posts)\n\n"
+                "IMPORTANT: Output EXACTLY 5 hashtags, no more, no less.\n\n"
                 f"Account style: {style.get('aesthetic', 'e-girl / alt')}\n"
                 f"Content types: {json.dumps(style.get('content_types', []))}\n"
                 f"Hashtag style: {posting.get('hashtag_style', 'mix of popular and niche')}"
@@ -184,7 +188,7 @@ async def generate_hashtags(
             "content": (
                 f"Themes: {', '.join(themes)}\n"
                 f"Caption: {caption}\n\n"
-                f"Generate {count} hashtags. Output as JSON array of strings (with # prefix)."
+                f"Generate EXACTLY {count} hashtags. Output as JSON array of strings (with # prefix)."
             ),
         },
     ]

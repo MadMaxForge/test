@@ -240,7 +240,7 @@ async def analyze_profile(
                 "- posting_strategy: Frequency, timing, engagement tips\n"
                 "- prompt_ideas: 5 detailed scene ideas for image generation, "
                 "each with outfit, background, pose, lighting, camera descriptions\n"
-                "- hashtag_recommendations: 15-20 relevant hashtags\n"
+                "- hashtag_recommendations: 5 relevant hashtags (max 5!)\n"
                 "- caption_style: How captions should be written"
             ),
         },
@@ -317,7 +317,7 @@ async def create_content_brief(
                 f"  - theme: Short theme name\n"
                 f"  - outfit_summary: 1-line outfit description\n"
                 f"- caption: Instagram caption text (short, flirty, with emoji)\n"
-                f"- hashtags: array of 15-20 relevant hashtags\n"
+                f"- hashtags: array of EXACTLY 5 relevant hashtags (no more!)\n"
                 f"- carousel_order: recommended order of images in carousel"
             ),
         },
