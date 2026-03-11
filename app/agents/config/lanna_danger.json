@@ -1,0 +1,83 @@
+{
+  "character": {
+    "name": "Lanna Danger",
+    "age": 24,
+    "instagram": "@lanna.danger",
+    "lora_name": "w1man.safetensors",
+    "trigger_word": "w1man",
+    "appearance": {
+      "hair": "long, straight black hair cascading past shoulders and chest",
+      "eyes": "wide doe-like eyes, expressive",
+      "face": "soft youthful face, full lips, subtle pout",
+      "body_type": "fit, curvy silhouette",
+      "skin": "smooth, natural skin tones",
+      "makeup": "light natural makeup, occasional bold looks"
+    }
+  },
+  "style": {
+    "aesthetic": "young adult e-girl / alt / casual sexy",
+    "tone": "confident, playful, youthful, slightly provocative",
+    "content_types": ["cosplay", "lifestyle", "dance_reels", "fashion"],
+    "favorite_themes": [
+      "cosplay outfits (superhero, anime, gaming)",
+      "neon-lit bedroom / cozy room setups",
+      "casual home outfits (crop tops, loungewear)",
+      "street fashion / going-out looks",
+      "dance and movement content"
+    ],
+    "color_palette": ["purple neon", "pink", "red", "warm ambient", "cool blue"],
+    "vibe": "casual and intimate atmosphere, amateur vibe with minor imperfections"
+  },
+  "restrictions": {
+    "no_nudity": true,
+    "no_explicit": true,
+    "no_minors_context": true,
+    "no_violence": true,
+    "no_drugs": true,
+    "cosplay_note": "Outfits must be complete and intact, clearly cosplay-focused rather than lingerie",
+    "age_context": "young adult (18+) only"
+  },
+  "prompt_template": {
+    "structure": [
+      "1. Trigger word + scene setting (location, mood, lighting color)",
+      "2. Background description (room details, furniture, depth of field)",
+      "3. Character appearance (hair, expression, face, makeup)",
+      "4. Outfit description (detailed, fabric textures, colors, fit)",
+      "5. Pose and hands (what she is doing, where hands are placed)",
+      "6. Camera settings (angle, framing, distance, perspective)",
+      "7. Lighting details (light source, shadows, color temperature, atmosphere)"
+    ],
+    "min_length_chars": 500,
+    "language": "english",
+    "tips": [
+      "Always start prompt with 'A w1man,'",
+      "Describe outfit in extreme detail (fabric, color, fit, brand-style)",
+      "Include specific lighting setup (neon color, direction, intensity)",
+      "Mention camera level and framing (eye-level, chest-level, full body)",
+      "Add atmosphere words (cozy, intimate, amateur, candid)",
+      "More detail = better accuracy, aim for 500-1000 characters"
+    ]
+  },
+  "generation": {
+    "default_width": 1088,
+    "default_height": 1920,
+    "sampler_steps": 10,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "cfg": 1,
+    "lora_chain": [
+      {"name": "REDZ15_DetailDaemonZ_lora_v1.1.safetensors", "strength": 0.5},
+      {"name": "Z-Breast-Slider.safetensors", "strength": 0.45},
+      {"name": "w1man.safetensors", "strength": 1.0}
+    ]
+  },
+  "posting": {
+    "max_posts_per_day": 2,
+    "cooldown_hours": 6,
+    "best_posting_times": ["10:00", "14:00", "19:00", "21:00"],
+    "timezone": "UTC",
+    "hashtag_style": "mix of popular and niche",
+    "caption_style": "short, flirty, with emoji, 1-3 sentences",
+    "caption_language": "english"
+  }
+}
