@@ -83,9 +83,12 @@ if [ -d "$COMFYUI_DIR/.git" ]; then
     echo "[entrypoint] ComfyUI commit after update: $AFTER_VER"
 fi
 
-# Upgrade safetensors to latest (older versions may not handle quantization metadata correctly)
-echo "[entrypoint] Upgrading safetensors library..."
-pip install --upgrade safetensors 2>&1 | tail -3 || true
+# Upgrade critical Python packages for flux2/qwen3 support
+# - safetensors: newer versions handle quantization metadata correctly
+# - transformers: Qwen2Tokenizer needed for flux2 Klein text encoder
+# The utf-32-be decode error can be caused by outdated transformers
+echo "[entrypoint] Upgrading critical Python packages..."
+pip install --upgrade safetensors transformers tokenizers 2>&1 | tail -5 || true
 
 # Verify critical modules and versions
 python3 -c "
@@ -100,6 +103,32 @@ except: print('[entrypoint] safetensors: not importable')
 try:
     import torch; print(f'[entrypoint] torch version: {torch.__version__}')
 except: print('[entrypoint] torch: not importable')
+
+try:
+    import transformers; print(f'[entrypoint] transformers version: {transformers.__version__}')
+except: print('[entrypoint] transformers: not importable')
+
+try:
+    from transformers import Qwen2Tokenizer
+    print('[entrypoint] Qwen2Tokenizer import: OK')
+except Exception as e:
+    print(f'[entrypoint] WARNING: Qwen2Tokenizer import FAILED: {e}')
+
+# Check qwen25_tokenizer directory
+tok_dir = '/comfyui/comfy/text_encoders/qwen25_tokenizer'
+if os.path.isdir(tok_dir):
+    files = os.listdir(tok_dir)
+    print(f'[entrypoint] qwen25_tokenizer dir: {files}')
+    for f in files:
+        fp = os.path.join(tok_dir, f)
+        sz = os.path.getsize(fp)
+        print(f'[entrypoint]   {f}: {sz} bytes')
+        # Quick check: try reading first 100 bytes
+        with open(fp, 'rb') as fh:
+            head = fh.read(100)
+            print(f'[entrypoint]   {f} starts with: {head[:50]}')
+else:
+    print(f'[entrypoint] WARNING: qwen25_tokenizer directory NOT FOUND at {tok_dir}')
 
 # Check ComfyUI git version
 import subprocess
