@@ -83,20 +83,62 @@ if [ -d "$COMFYUI_DIR/.git" ]; then
     echo "[entrypoint] ComfyUI commit after update: $AFTER_VER"
 fi
 
-# Verify critical modules load
+# Upgrade safetensors to latest (older versions may not handle quantization metadata correctly)
+echo "[entrypoint] Upgrading safetensors library..."
+pip install --upgrade safetensors 2>&1 | tail -3 || true
+
+# Verify critical modules and versions
 python3 -c "
-import sys
+import sys, os, struct, json, traceback
 sys.path.insert(0, '/comfyui')
+
+# Print versions
+try:
+    import safetensors; print(f'[entrypoint] safetensors version: {safetensors.__version__}')
+except: print('[entrypoint] safetensors: not importable')
+
+try:
+    import torch; print(f'[entrypoint] torch version: {torch.__version__}')
+except: print('[entrypoint] torch: not importable')
+
+# Check ComfyUI git version
+import subprocess
+try:
+    ver = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd='/comfyui', text=True).strip()
+    print(f'[entrypoint] ComfyUI git commit: {ver}')
+except: print('[entrypoint] ComfyUI git: unknown')
+
+# Check if CLIPType.FLUX2 exists
 try:
     import comfy.sd
-    print('[entrypoint] comfy.sd module loaded OK')
+    if hasattr(comfy.sd, 'CLIPType') and hasattr(comfy.sd.CLIPType, 'FLUX2'):
+        print(f'[entrypoint] CLIPType.FLUX2 = {comfy.sd.CLIPType.FLUX2}')
+    else:
+        print('[entrypoint] WARNING: CLIPType.FLUX2 NOT FOUND - ComfyUI is too old!')
 except Exception as e:
-    print(f'[entrypoint] WARNING: comfy.sd failed to load: {e}')
-try:
-    import comfy.text_encoders.flux
-    print('[entrypoint] comfy.text_encoders.flux module loaded OK')
-except Exception as e:
-    print(f'[entrypoint] WARNING: comfy.text_encoders.flux not available: {e}')
+    print(f'[entrypoint] WARNING: cannot check CLIPType: {e}')
+
+# Pre-flight check: try loading qwen safetensors header
+QWEN_PATH = '/runpod-volume/models/text_encoders/qwen_3_8b_fp8mixed.safetensors'
+if os.path.exists(QWEN_PATH):
+    try:
+        import safetensors.torch
+        # Try loading just the metadata (fast, doesn't load tensors)
+        with safetensors.safe_open(QWEN_PATH, framework='pt', device='cpu') as f:
+            metadata = f.metadata()
+            print(f'[entrypoint] qwen metadata keys: {list(metadata.keys()) if metadata else \"None\"}')
+            if metadata:
+                for k, v in metadata.items():
+                    print(f'[entrypoint]   {k}: {len(v)} chars')
+            keys = list(f.keys())
+            print(f'[entrypoint] qwen tensor count: {len(keys)}')
+            print(f'[entrypoint] qwen first 5 tensors: {keys[:5]}')
+        print('[entrypoint] qwen safetensors pre-flight: OK')
+    except Exception as e:
+        print(f'[entrypoint] qwen safetensors pre-flight FAILED: {e}')
+        traceback.print_exc()
+else:
+    print(f'[entrypoint] qwen file not yet downloaded (will be downloaded later)')
 " 2>&1 || true
 echo "[entrypoint] ComfyUI update complete."
 
