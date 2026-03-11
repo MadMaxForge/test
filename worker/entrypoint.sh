@@ -48,27 +48,57 @@ mkdir -p "$COMFYUI_NODES"
 # ============================================================
 # Update ComfyUI to latest version (required for flux2 CLIPLoader support)
 # The base image may have an older version that doesn't support flux2 type
+# The base image uses comfy-cli to install ComfyUI into /comfyui with
+# a virtual env at /opt/venv. We MUST use comfy-cli to update properly
+# so that all dependencies (including new ones for flux2/qwen3) are resolved.
 # ============================================================
 echo "[entrypoint] Updating ComfyUI to latest version..."
 COMFYUI_DIR="/comfyui"
+
+# Log current version before update
 if [ -d "$COMFYUI_DIR/.git" ]; then
+    BEFORE_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "[entrypoint] ComfyUI commit before update: $BEFORE_VER"
+fi
+
+# Method 1: Use comfy-cli (preferred - properly resolves all dependencies)
+if command -v comfy &>/dev/null; then
+    echo "[entrypoint] Using comfy-cli to update ComfyUI..."
+    comfy --workspace "$COMFYUI_DIR" update --version latest 2>&1 | tail -20
+    echo "[entrypoint] comfy-cli update completed (exit code: $?)"
+# Method 2: Fallback to git pull + pip install
+elif [ -d "$COMFYUI_DIR/.git" ]; then
+    echo "[entrypoint] comfy-cli not found, falling back to git pull..."
     cd "$COMFYUI_DIR"
-    # Log current version before update
-    BEFORE_VER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    echo "[entrypoint] ComfyUI version before update: $BEFORE_VER"
-    # Reset any local changes that might block pull
     git checkout -- . 2>/dev/null || true
     git pull --ff-only 2>&1 | tail -5
-    AFTER_VER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    echo "[entrypoint] ComfyUI version after update: $AFTER_VER"
     pip install -r "$COMFYUI_DIR/requirements.txt" --quiet --no-cache-dir 2>&1 | tail -3 || true
 else
-    echo "[entrypoint] WARNING: /comfyui is not a git repo, trying pip upgrade..."
-    pip install --upgrade comfyui 2>&1 | tail -5 || true
+    echo "[entrypoint] WARNING: No update method available, using base image version"
 fi
-# Log the ComfyUI version for debugging
-python3 -c "import importlib; m=importlib.import_module('comfy.cli_args'); print('[entrypoint] ComfyUI module loaded OK')" 2>/dev/null || true
-echo "[entrypoint] ComfyUI updated."
+
+# Log version after update
+if [ -d "$COMFYUI_DIR/.git" ]; then
+    AFTER_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "[entrypoint] ComfyUI commit after update: $AFTER_VER"
+fi
+
+# Verify critical modules load
+python3 -c "
+import sys
+sys.path.insert(0, '/comfyui')
+try:
+    import comfy.sd
+    print('[entrypoint] comfy.sd module loaded OK')
+except Exception as e:
+    print(f'[entrypoint] WARNING: comfy.sd failed to load: {e}')
+try:
+    import comfy.text_encoders.flux
+    print('[entrypoint] comfy.text_encoders.flux module loaded OK')
+except Exception as e:
+    print(f'[entrypoint] WARNING: comfy.text_encoders.flux not available: {e}')
+" 2>&1 || true
+echo "[entrypoint] ComfyUI update complete."
 
 # Install aria2 if not present (base image may not have it)
 if ! command -v aria2c &>/dev/null; then
