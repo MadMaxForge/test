@@ -87,10 +87,11 @@ echo "[entrypoint] Phase 1 complete ($(date -u)). Starting background setup + wo
 background_setup() {
     echo "[bg] === Background setup starting at $(date -u) ==="
 
-    # CRITICAL: Wait for ComfyUI to fully start before doing ANY pip operations.
+    # Wait for ComfyUI to fully start before doing pip operations.
     # pip install while ComfyUI is importing causes ImportError race conditions.
-    echo "[bg] Waiting 120s for ComfyUI to fully initialize before pip operations..."
-    sleep 120
+    # 30s is enough - ComfyUI loads in ~15s based on logs.
+    echo "[bg] Waiting 30s for ComfyUI to finish importing..."
+    sleep 30
     echo "[bg] Wait complete, proceeding with background setup..."
 
     # 2a. Install aria2 if not present
