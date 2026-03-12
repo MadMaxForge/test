@@ -165,10 +165,13 @@ def test_endpoint():
     print(f"[Test] Model: {DEFAULT_MODEL}")
 
     test_prompt = (
-        "A stylish coffee cup on a marble table, "
-        "soft morning light from a window, steam rising gently, "
-        "minimalist cafe interior in the background slightly out of focus, "
-        "aesthetic Instagram flat-lay style, warm tones, photorealistic"
+        "Professional product photography of a ceramic coffee cup on a white marble table, "
+        "shot with a Canon EOS R5 85mm f/1.4 lens, shallow depth of field, "
+        "soft diffused natural morning light from a large window to the left, "
+        "gentle steam wisps rising from the cup, subtle shadow on the marble surface, "
+        "minimalist Scandinavian cafe interior blurred in the background, "
+        "warm color temperature 5600K, no filters, no illustration, "
+        "ultra high resolution RAW photograph, 8K detail, real materials real textures"
     )
     print(f"[Test] Prompt: {test_prompt[:100]}...")
 

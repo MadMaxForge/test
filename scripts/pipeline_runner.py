@@ -182,6 +182,21 @@ def main():
     else:
         print("\n[SKIP] Image generation skipped (--skip-generate)")
 
+    # Step 5a: Nano Banana 2 (non-character images — backgrounds, products, etc.)
+    if not skip_generate:
+        nano_size = "4:5" if content_type == "feed" else "9:16"
+        ok = run_step(
+            "Nano Banana 2 (Non-character Images)",
+            f"cd {WORKSPACE} && python3 {SCRIPTS}/nano_banana_generator.py {username} --size {nano_size}"
+        )
+        if not ok:
+            print("[INFO] Nano Banana 2 step skipped or had no non-character prompts (this is normal)")
+        else:
+            nano_log_path = os.path.join(WORKSPACE, "output", "photos", username, "nano_generation_log.json")
+            if os.path.exists(nano_log_path):
+                nano_log = json.load(open(nano_log_path))
+                print(f"[OK] Nano Banana: {nano_log['total_success']}/{nano_log['total_requested']} images")
+
     # Step 5b: Kling Motion Control (only for reels)
     kling_result = None
     if content_type == "reel" and not skip_generate:
