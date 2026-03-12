@@ -23,6 +23,15 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
 
+# Load .env file if python-dotenv is available
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
 # Database connection settings - uses Docker-internal PostgreSQL
 DB_HOST = os.environ.get("PIPELINE_DB_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("PIPELINE_DB_PORT", "5432"))
