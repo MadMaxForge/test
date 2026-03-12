@@ -169,16 +169,23 @@ install_node() {
     local vol_node="$VOLUME_NODES/$dirname"
     local comfy_node="$COMFYUI_NODES/$dirname"
 
-    # Check if cached AND git repo is complete (rev-parse HEAD succeeds)
-    if [ -d "$vol_node/.git" ] && git -C "$vol_node" rev-parse HEAD &>/dev/null && \
-       [ -f "$vol_node/__init__.py" -o -d "$vol_node/js" -o -f "$vol_node/nodes.py" ]; then
-        ln -sf "$vol_node" "$comfy_node"
-        echo "[setup] Node OK (cached): $dirname"
-        return 0
+    # Check if cached AND git repo is valid
+    if [ -d "$vol_node/.git" ] && git -C "$vol_node" rev-parse HEAD &>/dev/null; then
+        # Restore any missing working tree files (fixes partial clones)
+        git -C "$vol_node" checkout -- . 2>/dev/null || true
+        if [ -f "$vol_node/__init__.py" -o -d "$vol_node/js" -o -f "$vol_node/nodes.py" ]; then
+            # Re-install pip requirements (might have been missed on interrupted install)
+            if [ -f "$vol_node/requirements.txt" ]; then
+                pip install -r "$vol_node/requirements.txt" --no-cache-dir 2>&1 | tail -2 || true
+            fi
+            ln -sf "$vol_node" "$comfy_node"
+            echo "[setup] Node OK (cached): $dirname"
+            return 0
+        fi
     fi
-    # If directory exists but git is broken, remove it for fresh clone
-    if [ -d "$vol_node" ] && ! git -C "$vol_node" rev-parse HEAD &>/dev/null; then
-        echo "[setup] Node CORRUPT (incomplete git): $dirname - re-cloning..."
+    # If directory exists but git is broken or files still missing, remove for fresh clone
+    if [ -d "$vol_node" ]; then
+        echo "[setup] Node incomplete or corrupt: $dirname - re-cloning..."
         rm -rf "$vol_node"
     fi
 
