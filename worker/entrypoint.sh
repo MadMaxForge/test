@@ -1,16 +1,14 @@
 #!/bin/bash
-# SCAIL Motion Control Worker - Entrypoint v2
+# SCAIL Motion Control Worker - Entrypoint v3
 #
 # KEY DESIGN:
-#   1. /start.sh runs in BACKGROUND -> worker becomes 'ready' immediately
-#   2. Heavy setup runs in FOREGROUND -> keeps container alive until complete
-#   3. 'wait' on /start.sh -> container stays alive indefinitely after setup
+#   1. ALL custom nodes installed BEFORE ComfyUI starts (nodes scanned at startup only)
+#   2. Critical pip packages upgraded BEFORE ComfyUI starts
+#   3. /start.sh launched AFTER nodes ready -> ComfyUI finds all nodes on first scan
+#   4. Model downloads run in FOREGROUND after /start.sh (keeps container alive)
+#   5. Models are loaded on-demand by ComfyUI when jobs arrive
 #
-# This avoids TWO problems:
-#   - RunPod init timeout (worker reports ready quickly)
-#   - Container killed during setup (foreground process keeps it alive)
-#
-# On subsequent boots with cached volume: everything symlinked in <30s, instant start
+# On subsequent boots with cached volume: nodes verified in <60s, instant start
 
 VOLUME_ROOT="/runpod-volume"
 VOLUME_MODELS="$VOLUME_ROOT/models"
@@ -19,43 +17,22 @@ COMFYUI_MODELS="/comfyui/models"
 COMFYUI_NODES="/comfyui/custom_nodes"
 COMFYUI_DIR="/comfyui"
 
-echo "[entrypoint] === SCAIL Motion Control Worker Starting ==="
+echo "[entrypoint] === SCAIL Motion Control Worker v3 Starting ==="
 echo "[entrypoint] Date: $(date -u)"
 
 # ============================================================
-# PHASE 1: Quick setup (<30 seconds)
-# Symlink cached nodes + models from volume, patch handler
+# PHASE 1: Install custom nodes BEFORE ComfyUI starts
+# ComfyUI only scans for nodes at startup, so they must exist first
 # ============================================================
 
-# 1a. Symlink cached custom nodes from volume (instant)
-mkdir -p "$COMFYUI_NODES"
-NODES_LINKED=0
-if [ -d "$VOLUME_NODES" ]; then
-    for node_dir in "$VOLUME_NODES"/*/; do
-        [ -d "$node_dir" ] || continue
-        dirname=$(basename "$node_dir")
-        ln -sf "$node_dir" "$COMFYUI_NODES/$dirname"
-        NODES_LINKED=$((NODES_LINKED + 1))
-    done
-    echo "[entrypoint] Linked $NODES_LINKED cached custom nodes from volume"
-else
-    echo "[entrypoint] No cached custom nodes on volume (first boot)"
+# 1a. Install aria2 if not present (needed for model downloads later)
+if ! command -v aria2c &>/dev/null; then
+    echo "[setup] Installing aria2..."
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
 fi
 
-# 1b. Symlink cached models from volume (instant)
-if [ -d "$VOLUME_MODELS" ]; then
-    for vol_dir in "$VOLUME_MODELS"/*/; do
-        [ -d "$vol_dir" ] || continue
-        dirname=$(basename "$vol_dir")
-        target_dir="$COMFYUI_MODELS/$dirname"
-        mkdir -p "$target_dir"
-        for item in "$vol_dir"*; do
-            [ -e "$item" ] || continue
-            ln -sf "$item" "$target_dir/$(basename "$item")"
-        done
-    done
-    echo "[entrypoint] Model symlinks created"
-fi
+# 1b. Prepare directories
+mkdir -p "$COMFYUI_NODES" "$VOLUME_NODES"
 
 # 1c. Patch handler.py for video output (VHS_VideoCombine uses 'gifs' key)
 if ! grep -q 'gifs' /handler.py 2>/dev/null; then
@@ -79,88 +56,9 @@ else:
 ' 2>&1 || true
 fi
 
-echo "[entrypoint] Phase 1 complete ($(date -u))."
+echo "[setup] Phase 1a complete - handler patched. ($(date -u))"
 
-# ============================================================
-# PHASE 2: Start worker in BACKGROUND
-# Worker becomes 'ready' immediately while we continue setup
-# ============================================================
-echo "[entrypoint] Starting /start.sh in background..."
-/start.sh &
-WORKER_PID=$!
-echo "[entrypoint] Worker PID: $WORKER_PID"
-
-# Wait for ComfyUI to fully start and import all libraries
-# CRITICAL: pip install while ComfyUI imports causes ImportError race conditions
-echo "[entrypoint] Waiting 45s for ComfyUI to finish importing..."
-sleep 45
-echo "[entrypoint] ComfyUI should be loaded. Starting heavy setup..."
-
-# ============================================================
-# PHASE 3: Heavy setup in FOREGROUND (keeps container alive)
-# Install custom nodes, upgrade packages, download models
-# ============================================================
-
-# 3a. Install aria2 if not present
-if ! command -v aria2c &>/dev/null; then
-    echo "[setup] Installing aria2..."
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
-fi
-
-# 3b. ComfyUI version check
-if [ -d "$COMFYUI_DIR/.git" ]; then
-    CUR_VER=$(cd "$COMFYUI_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    echo "[setup] ComfyUI version: $CUR_VER (using base image version)"
-fi
-
-# 3c. Integrity check on qwen safetensors file
-QWEN_FILE="$VOLUME_MODELS/text_encoders/qwen_3_8b_fp8mixed.safetensors"
-if [ -f "$QWEN_FILE" ]; then
-    echo "[setup] Checking qwen file integrity..."
-    python3 -c '
-import struct, json, os, sys
-fpath = "/runpod-volume/models/text_encoders/qwen_3_8b_fp8mixed.safetensors"
-if not os.path.exists(fpath):
-    sys.exit(0)
-EXPECTED_SIZE = 8664848742
-actual_size = os.path.getsize(fpath)
-print(f"[setup] qwen size: {actual_size} (expected: {EXPECTED_SIZE})")
-if actual_size < EXPECTED_SIZE:
-    print("[setup] File truncated! Deleting...")
-    os.remove(fpath)
-    sys.exit(0)
-try:
-    with open(fpath, "rb") as f:
-        header_size = struct.unpack("<Q", f.read(8))[0]
-        header_data = f.read(header_size)
-        header = json.loads(header_data.decode("utf-8"))
-        data_start = 8 + header_size
-        quant_keys = [k for k in header if "comfy_quant" in k]
-        print(f"[setup] comfy_quant tensors: {len(quant_keys)}")
-        if quant_keys:
-            key = quant_keys[0]
-            info = header[key]
-            start, end = info["data_offsets"]
-            size = end - start
-            f.seek(data_start + start)
-            tensor_bytes = f.read(size)
-            if tensor_bytes == b"\x00" * size:
-                print("[setup] comfy_quant ALL ZEROS - corrupt! Deleting...")
-                os.remove(fpath)
-            else:
-                try:
-                    json.loads(tensor_bytes)
-                    print("[setup] comfy_quant data OK")
-                except:
-                    print("[setup] comfy_quant not valid JSON! Deleting...")
-                    os.remove(fpath)
-except Exception as e:
-    print(f"[setup] Integrity check error: {e}")
-' 2>&1 || true
-fi
-
-# 3d. Install custom nodes to volume (cached for future restarts)
-mkdir -p "$VOLUME_NODES"
+# 1d. Install/verify custom nodes on volume
 NEW_NODES_INSTALLED=0
 
 install_node() {
@@ -222,11 +120,87 @@ python3 -c "import onnxruntime" 2>/dev/null || {
 
 echo "[setup] Custom nodes done. New installs: $NEW_NODES_INSTALLED"
 
-# 3e. Upgrade critical packages (AFTER custom nodes installed, ComfyUI is long past startup)
-echo "[setup] Upgrading critical packages for flux2/qwen3 support..."
+# 1e. Upgrade critical packages for flux2/qwen3 support (BEFORE ComfyUI starts)
+echo "[setup] Upgrading critical packages..."
 pip install --upgrade safetensors transformers tokenizers 2>&1 | tail -5 || true
 
-# 3f. Download models
+# 1f. Symlink cached models from volume (instant - models loaded on-demand)
+if [ -d "$VOLUME_MODELS" ]; then
+    for vol_dir in "$VOLUME_MODELS"/*/; do
+        [ -d "$vol_dir" ] || continue
+        dirname=$(basename "$vol_dir")
+        target_dir="$COMFYUI_MODELS/$dirname"
+        mkdir -p "$target_dir"
+        for item in "$vol_dir"*; do
+            [ -e "$item" ] || continue
+            ln -sf "$item" "$target_dir/$(basename "$item")"
+        done
+    done
+    echo "[setup] Model symlinks created"
+fi
+
+echo "[setup] Phase 1 complete - all nodes installed. ($(date -u))"
+
+# ============================================================
+# PHASE 2: Start worker (nodes are ready, ComfyUI will find them)
+# ============================================================
+echo "[entrypoint] Starting /start.sh in background..."
+/start.sh &
+WORKER_PID=$!
+echo "[entrypoint] Worker PID: $WORKER_PID (ComfyUI will scan nodes on startup)"
+
+# ============================================================
+# PHASE 3: Download models in FOREGROUND (keeps container alive)
+# Models are loaded on-demand when jobs arrive
+# ============================================================
+
+# 3a. Integrity check on qwen safetensors file
+QWEN_FILE="$VOLUME_MODELS/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+if [ -f "$QWEN_FILE" ]; then
+    echo "[setup] Checking qwen file integrity..."
+    python3 -c '
+import struct, json, os, sys
+fpath = "/runpod-volume/models/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+if not os.path.exists(fpath):
+    sys.exit(0)
+EXPECTED_SIZE = 8664848742
+actual_size = os.path.getsize(fpath)
+print(f"[setup] qwen size: {actual_size} (expected: {EXPECTED_SIZE})")
+if actual_size < EXPECTED_SIZE:
+    print("[setup] File truncated! Deleting...")
+    os.remove(fpath)
+    sys.exit(0)
+try:
+    with open(fpath, "rb") as f:
+        header_size = struct.unpack("<Q", f.read(8))[0]
+        header_data = f.read(header_size)
+        header = json.loads(header_data.decode("utf-8"))
+        data_start = 8 + header_size
+        quant_keys = [k for k in header if "comfy_quant" in k]
+        print(f"[setup] comfy_quant tensors: {len(quant_keys)}")
+        if quant_keys:
+            key = quant_keys[0]
+            info = header[key]
+            start, end = info["data_offsets"]
+            size = end - start
+            f.seek(data_start + start)
+            tensor_bytes = f.read(size)
+            if tensor_bytes == b"\x00" * size:
+                print("[setup] comfy_quant ALL ZEROS - corrupt! Deleting...")
+                os.remove(fpath)
+            else:
+                try:
+                    json.loads(tensor_bytes)
+                    print("[setup] comfy_quant data OK")
+                except:
+                    print("[setup] comfy_quant not valid JSON! Deleting...")
+                    os.remove(fpath)
+except Exception as e:
+    print(f"[setup] Integrity check error: {e}")
+' 2>&1 || true
+fi
+
+# 3b. Download models
 DOWNLOAD_ERRORS=0
 
 validate_safetensors() {
@@ -355,7 +329,7 @@ if [ $DOWNLOAD_ERRORS -gt 0 ]; then
     echo "[setup] WARNING: $DOWNLOAD_ERRORS download(s) failed."
 fi
 
-# 3g. Sync symlinks again (for newly downloaded models)
+# 3c. Sync symlinks again (for newly downloaded models)
 if [ -d "$VOLUME_MODELS" ]; then
     echo "[setup] Refreshing model symlinks..."
     for vol_dir in "$VOLUME_MODELS"/*/; do
@@ -369,12 +343,6 @@ if [ -d "$VOLUME_MODELS" ]; then
         done
     done
 fi
-
-# 3h. Restart ComfyUI to pick up newly installed nodes + upgraded packages
-echo "[setup] Restarting ComfyUI to load custom nodes and updated packages..."
-sleep 3
-pkill -f "python.*main.py.*--listen" 2>/dev/null || true
-echo "[setup] ComfyUI restart signal sent. It will auto-restart via /start.sh supervisor."
 
 echo "[setup] === Setup complete at $(date -u) ==="
 echo "[setup] Worker is running (PID $WORKER_PID). Ready to process jobs."
