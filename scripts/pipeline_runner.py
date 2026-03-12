@@ -222,7 +222,6 @@ def main():
             if not start_image:
                 output_dir = os.path.join(WORKSPACE, "output", "photos", username)
                 if os.path.exists(output_dir):
-                    from pathlib import Path
                     images = sorted(Path(output_dir).glob("*.png"))
                     if images:
                         start_image = str(images[0])
@@ -239,7 +238,6 @@ def main():
                     # Find the generated video
                     reels_dir = os.path.join(WORKSPACE, "output", "reels")
                     if os.path.exists(reels_dir):
-                        from pathlib import Path
                         videos = sorted(Path(reels_dir).glob("*.mp4"), reverse=True)
                         if videos:
                             kling_result = str(videos[0])
@@ -283,7 +281,6 @@ def main():
         if ok:
             posts_dir = os.path.join(WORKSPACE, "posts")
             if os.path.exists(posts_dir):
-                from pathlib import Path
                 post_files = sorted(Path(posts_dir).glob(f"{username}_post_*.json"), reverse=True)
                 if post_files:
                     post_path = str(post_files[0])
