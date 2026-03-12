@@ -27,7 +27,7 @@ def run_step(name, cmd):
     print(f"\n{'=' * 50}")
     print(f"  STEP: {name}")
     print(f"{'=' * 50}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
     print(result.stdout)
     if result.stderr:
         print(result.stderr)
