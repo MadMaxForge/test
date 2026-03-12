@@ -64,7 +64,7 @@ async def send_carousel_preview(username, chat_id=None):
         print("[ERROR] TELEGRAM_CHAT_ID not set and --chat-id not provided")
         sys.exit(1)
 
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    from telegram.request import HTTPXRequest; request = HTTPXRequest(read_timeout=60, write_timeout=60, connect_timeout=30); bot = Bot(token=TELEGRAM_BOT_TOKEN, request=request)
 
     # Find latest post package
     posts_dir = os.path.join(WORKSPACE, "posts")
@@ -220,7 +220,9 @@ async def send_reel_approval(username, frame_path, ref_video_path,
         print("[ERROR] TELEGRAM_CHAT_ID not set")
         sys.exit(1)
 
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(read_timeout=60, write_timeout=60, connect_timeout=30)
+    bot = Bot(token=TELEGRAM_BOT_TOKEN, request=request)
 
     print("[Telegram] Sending reel approval request for @%s..." % username)
 
@@ -374,7 +376,7 @@ async def poll_approval(approval_id, timeout=3600):
     return "timeout"
 
 
-async def start_listener(chat_id=None):
+def start_listener(chat_id=None):
     """
     Start Telegram bot listener for approval callbacks.
 
@@ -489,7 +491,7 @@ async def start_listener(chat_id=None):
 
     print("[Listener] Starting Telegram approval listener...")
     print("[Listener] Waiting for button presses (Ctrl+C to stop)...")
-    await app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
 
 
 def main():
@@ -506,7 +508,7 @@ def main():
         if "--chat-id" in sys.argv:
             idx = sys.argv.index("--chat-id")
             chat_id = sys.argv[idx + 1]
-        asyncio.run(start_listener(chat_id))
+        start_listener(chat_id)
         return
 
     username = sys.argv[1]
