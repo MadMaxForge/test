@@ -14,7 +14,7 @@ import requests
 
 WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-MODEL = "moonshotai/kimi-k2.5"
+MODEL = "google/gemini-2.0-flash-lite-001"
 
 DIRECTOR_SYSTEM_PROMPT = """You are Director — a strategic brief creator for Instagram content planning.
 You receive a Scout analysis of an Instagram profile and create an actionable brief.

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-MODEL = "moonshotai/kimi-k2.5"
+MODEL = "google/gemini-2.0-flash-lite-001"
 
 SCOUT_SYSTEM_PROMPT = """You are Scout - an Instagram visual style analyst agent.
 You receive actual images from an Instagram profile and analyze them visually.

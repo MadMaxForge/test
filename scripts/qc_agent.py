@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-MODEL = "moonshotai/kimi-k2.5"
+MODEL = "google/gemini-2.0-flash-lite-001"
 
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT = os.environ.get("RUNPOD_ENDPOINT", "")
@@ -215,6 +215,81 @@ def evaluate_image(image_path, prompt_text):
     return parse_json_response(content)
 
 
+def evaluate_images_batch(image_paths, prompts_list):
+    """Evaluate ALL images in a single API call (batch mode) to save costs.
+    Returns a list of QC results, one per image."""
+    if not OPENROUTER_API_KEY:
+        print("[ERROR] OPENROUTER_API_KEY not set")
+        return None
+
+    content_parts = []
+    text_intro = "Evaluate these %d AI-generated images for Instagram quality.\n\n" % len(image_paths)
+
+    for i, img_path in enumerate(image_paths):
+        prompt_text = prompts_list[i] if i < len(prompts_list) else ""
+        text_intro += "IMAGE %d (%s):\nPrompt: %s\n\n" % (i + 1, Path(img_path).name, prompt_text[:300])
+
+    text_intro += ("For EACH image, score all 6 criteria 0-10.\n"
+                   "Output ONLY a JSON object with this structure:\n"
+                   '{"results": [{"image": "filename", "scores": {"prompt_adherence": N, '
+                   '"character_consistency": N, "technical_quality": N, "composition": N, '
+                   '"content_safety": N, "mirror_reflection": N, "overall": N.N}, '
+                   '"pass": true/false, "artifact_check": {...}, "issues": [...], '
+                   '"notes": "..."}]}\nNo markdown fences.')
+
+    content_parts.append({"type": "text", "text": text_intro})
+
+    for img_path in image_paths:
+        with open(img_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        ext = Path(img_path).suffix.lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        content_parts.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + img_b64}})
+
+    messages = [
+        {"role": "system", "content": QC_SYSTEM_PROMPT},
+        {"role": "user", "content": content_parts},
+    ]
+
+    print("[QC] Batch evaluating %d images in single API call..." % len(image_paths))
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer " + OPENROUTER_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MODEL,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 16000,
+        },
+        timeout=300,
+    )
+
+    if resp.status_code != 200:
+        print("[ERROR] QC batch API returned %d: %s" % (resp.status_code, resp.text[:300]))
+        return None
+
+    data = resp.json()
+    choices = data.get("choices", [])
+    if not choices:
+        print("[ERROR] No choices in QC batch response")
+        return None
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        print("[ERROR] Empty content in QC batch response")
+        return None
+
+    parsed = parse_json_response(content)
+    if parsed and "results" in parsed:
+        return parsed["results"]
+    elif parsed:
+        # Model returned single result or different format — wrap it
+        return [parsed]
+    return None
+
+
 def regenerate_image(prompt_text):
     """Regenerate an image via RunPod with a new random seed."""
     WORKFLOW = {
@@ -340,60 +415,86 @@ def main():
     for idx, p in enumerate(prompts_list):
         prompt_by_index[idx + 1] = p.get("prompt", "")
 
-    qc_results = []
-
+    # Match prompts to images
+    matched_prompts = []
     for i, img_path in enumerate(image_files):
-        # Match prompt by extracting index from filename (e.g. username_SceneName_2.png -> index 2)
         prompt_text = ""
-        fname = img_path.stem  # e.g. kyliejenner_Fashion_Archive_2
+        fname = img_path.stem
         parts = fname.rsplit("_", 1)
         if len(parts) == 2 and parts[1].isdigit():
             img_idx = int(parts[1])
             prompt_text = prompt_by_index.get(img_idx, "")
         if not prompt_text and i < len(prompts_list):
             prompt_text = prompts_list[i].get("prompt", "")
+        matched_prompts.append(prompt_text)
 
-        print("\n[QC] Image %d/%d: %s" % (i + 1, len(image_files), img_path.name))
+    qc_results = []
 
-        best_result = None
-        best_score = 0
+    # Try batch evaluation first (single API call for all images — much cheaper)
+    print("[QC] Attempting batch evaluation (1 API call for %d images)..." % len(image_files))
+    batch_results = evaluate_images_batch(
+        [str(p) for p in image_files], matched_prompts
+    )
 
-        for attempt in range(max_retries):
-            if attempt > 0:
-                print("  [QC] Retry %d/%d - regenerating with new seed..." % (attempt, max_retries - 1))
-                new_bytes = regenerate_image(prompt_text)
-                if new_bytes:
-                    with open(str(img_path), "wb") as f:
-                        f.write(new_bytes)
-                    print("  [QC] Regenerated image saved")
-                else:
-                    print("  [QC] Regeneration failed, keeping current image")
-
-            print("  [QC] Evaluating (attempt %d)..." % (attempt + 1))
-            result = evaluate_image(str(img_path), prompt_text)
-
+    if batch_results and len(batch_results) >= len(image_files):
+        print("[QC] Batch evaluation successful!")
+        for i, img_path in enumerate(image_files):
+            result = batch_results[i] if i < len(batch_results) else None
             if result is None:
-                print("  [QC] Evaluation failed")
-                continue
-
+                result = {"scores": {"overall": 0}, "pass": False, "issues": ["batch eval missing"], "notes": "No result"}
             scores = result.get("scores", {})
             overall = scores.get("overall", 0)
-            print("  [QC] Score: %.1f/10 (%s)" % (overall, "PASS" if overall >= threshold else "FAIL"))
+            result["image"] = img_path.name
+            result["attempts"] = 1
+            result["final_pass"] = overall >= threshold
+            print("  [QC] %s: %.1f/10 (%s)" % (img_path.name, overall, "PASS" if overall >= threshold else "FAIL"))
+            qc_results.append(result)
+    else:
+        # Fallback: evaluate each image individually (more expensive but more reliable)
+        print("[QC] Batch failed or incomplete, falling back to individual evaluation...")
+        for i, img_path in enumerate(image_files):
+            prompt_text = matched_prompts[i]
+            print("\n[QC] Image %d/%d: %s" % (i + 1, len(image_files), img_path.name))
 
-            if overall > best_score:
-                best_score = overall
-                best_result = result
+            best_result = None
+            best_score = 0
 
-            if overall >= threshold:
-                break
+            for attempt in range(max_retries):
+                if attempt > 0:
+                    print("  [QC] Retry %d/%d - regenerating with new seed..." % (attempt, max_retries - 1))
+                    new_bytes = regenerate_image(prompt_text)
+                    if new_bytes:
+                        with open(str(img_path), "wb") as f:
+                            f.write(new_bytes)
+                        print("  [QC] Regenerated image saved")
+                    else:
+                        print("  [QC] Regeneration failed, keeping current image")
 
-        if best_result is None:
-            best_result = {"scores": {"overall": 0}, "pass": False, "issues": ["evaluation failed"], "notes": "Could not evaluate"}
+                print("  [QC] Evaluating (attempt %d)..." % (attempt + 1))
+                result = evaluate_image(str(img_path), prompt_text)
 
-        best_result["image"] = img_path.name
-        best_result["attempts"] = min(attempt + 1, max_retries)
-        best_result["final_pass"] = best_score >= threshold
-        qc_results.append(best_result)
+                if result is None:
+                    print("  [QC] Evaluation failed")
+                    continue
+
+                scores = result.get("scores", {})
+                overall = scores.get("overall", 0)
+                print("  [QC] Score: %.1f/10 (%s)" % (overall, "PASS" if overall >= threshold else "FAIL"))
+
+                if overall > best_score:
+                    best_score = overall
+                    best_result = result
+
+                if overall >= threshold:
+                    break
+
+            if best_result is None:
+                best_result = {"scores": {"overall": 0}, "pass": False, "issues": ["evaluation failed"], "notes": "Could not evaluate"}
+
+            best_result["image"] = img_path.name
+            best_result["attempts"] = min(attempt + 1, max_retries)
+            best_result["final_pass"] = best_score >= threshold
+            qc_results.append(best_result)
 
     # Summary
     passed = sum(1 for r in qc_results if r.get("final_pass", False))
