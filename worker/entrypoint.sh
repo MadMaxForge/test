@@ -169,10 +169,17 @@ install_node() {
     local vol_node="$VOLUME_NODES/$dirname"
     local comfy_node="$COMFYUI_NODES/$dirname"
 
-    if [ -d "$vol_node" ] && [ -f "$vol_node/__init__.py" -o -d "$vol_node/js" -o -f "$vol_node/nodes.py" ]; then
+    # Check if cached AND git repo is complete (rev-parse HEAD succeeds)
+    if [ -d "$vol_node/.git" ] && git -C "$vol_node" rev-parse HEAD &>/dev/null && \
+       [ -f "$vol_node/__init__.py" -o -d "$vol_node/js" -o -f "$vol_node/nodes.py" ]; then
         ln -sf "$vol_node" "$comfy_node"
         echo "[setup] Node OK (cached): $dirname"
         return 0
+    fi
+    # If directory exists but git is broken, remove it for fresh clone
+    if [ -d "$vol_node" ] && ! git -C "$vol_node" rev-parse HEAD &>/dev/null; then
+        echo "[setup] Node CORRUPT (incomplete git): $dirname - re-cloning..."
+        rm -rf "$vol_node"
     fi
 
     echo "[setup] Installing node: $dirname ..."
