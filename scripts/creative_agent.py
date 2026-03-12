@@ -216,6 +216,24 @@ def main():
     brief_text = json.dumps(brief, indent=2, ensure_ascii=False)
     analysis_text = json.dumps(analysis, indent=2, ensure_ascii=False) if analysis else "Not available"
 
+    # Load learned patterns from memory
+    memory_context = ""
+    try:
+        from agent_memory import AgentMemory
+        mem = AgentMemory()
+        content_type = "feed"  # default
+        if "--content-type" in sys.argv:
+            ct_idx = sys.argv.index("--content-type")
+            content_type = sys.argv[ct_idx + 1]
+        memory_context = mem.build_creative_context(content_type=content_type, max_examples=5)
+        if memory_context:
+            print("[Creative] Loaded %d chars of learned patterns from memory" % len(memory_context))
+        else:
+            print("[Creative] No learned patterns yet (first run)")
+    except Exception as e:
+        print("[Creative] Warning: Could not load memory: %s" % e)
+        mem = None
+
     prompt = (
         "Based on the following Instagram strategy brief and profile analysis,\n"
         f"generate exactly {num_prompts} detailed image generation prompts for the w1man character (Lanna Danger).\n\n"
@@ -248,6 +266,14 @@ def main():
         "For each prompt, note which reference slide it mirrors.\n"
         "Output ONLY the JSON object. No markdown."
     )
+
+    # Inject learned patterns if available
+    if memory_context:
+        prompt += (
+            "\n\n=== LEARNED PATTERNS (from past generations) ===\n"
+            "Use these to improve quality. Repeat what worked, avoid what failed:\n\n"
+            + memory_context
+        )
 
     if not OPENROUTER_API_KEY:
         print("[ERROR] OPENROUTER_API_KEY not set")
@@ -318,6 +344,43 @@ def main():
         concept = p.get("concept", "N/A")
         prompt_text = p.get("prompt", "")[:100]
         print(f"  [{i + 1}] {concept}: {prompt_text}...")
+
+    # Save generation to memory
+    try:
+        if mem is None:
+            from agent_memory import AgentMemory
+            mem = AgentMemory()
+        for p in creative_output.get("prompts", []):
+            mem.save_generation(
+                target_account=os.environ.get("TARGET_ACCOUNT", "lanna.danger"),
+                content_type=p.get("content_type", "feed"),
+                prompt_text=p.get("prompt", ""),
+                prompt_json=p,
+                generation_tool="pending",
+                source_username=username,
+            )
+        # Save style patterns from this generation
+        for p in creative_output.get("prompts", []):
+            mem.save_pattern(
+                pattern_type="prompt_style",
+                pattern_data={
+                    "concept": p.get("concept", ""),
+                    "content_type": p.get("content_type", "feed"),
+                    "prompt_preview": p.get("prompt", "")[:300],
+                },
+                source_username=username,
+                score=0.0,  # will be updated after QC
+            )
+        mem.log_event("creative", "prompts_generated", {
+            "username": username,
+            "count": creative_output.get("total_prompts", 0),
+            "content_type": creative_output.get("content_type", "feed"),
+        }, lesson="Generated %d prompts inspired by @%s" % (
+            creative_output.get("total_prompts", 0), username))
+        mem.close()
+        print("[Creative] Saved generation history to memory")
+    except Exception as e:
+        print("[Creative] Warning: Could not save to memory: %s" % e)
 
     return output_path
 

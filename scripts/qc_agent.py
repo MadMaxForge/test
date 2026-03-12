@@ -273,6 +273,18 @@ def main():
 
     print("[QC] Quality checking images for @%s (threshold=%d, max_retries=%d)" % (username, threshold, max_retries))
 
+    # Load memory for learned artifact patterns
+    mem = None
+    qc_memory_context = ""
+    try:
+        from agent_memory import AgentMemory
+        mem = AgentMemory()
+        qc_memory_context = mem.build_qc_context(max_examples=5)
+        if qc_memory_context:
+            print("[QC] Loaded learned artifact patterns from memory")
+    except Exception as e:
+        print("[QC] Warning: Could not load memory: %s" % e)
+
     # Load creative prompts for reference
     prompts_path = os.path.join(WORKSPACE, "creative_prompts", username + "_prompts.json")
     prompts_data = {}
@@ -373,6 +385,35 @@ def main():
         "average_score": round(avg_score, 1),
         "results": qc_results
     }
+
+    # Save QC results to memory
+    try:
+        if mem is None:
+            from agent_memory import AgentMemory
+            mem = AgentMemory()
+        for r in qc_results:
+            score = r.get("scores", {}).get("overall", 0)
+            issues = r.get("issues", [])
+            # Log artifact patterns for learning
+            if issues:
+                mem.log_event("qc", "artifacts_detected", {
+                    "image": r.get("image", ""),
+                    "score": score,
+                    "issues": issues,
+                    "notes": r.get("notes", ""),
+                }, lesson="Image %s scored %.1f - issues: %s" % (
+                    r.get("image", "?"), score, ", ".join(issues[:3])))
+        mem.log_event("qc", "batch_complete", {
+            "username": username,
+            "total": total,
+            "passed": passed,
+            "avg_score": round(avg_score, 1),
+        }, lesson="QC batch for @%s: %d/%d passed, avg %.1f" % (
+            username, passed, total, avg_score))
+        mem.close()
+        print("[QC] Results saved to memory database")
+    except Exception as e:
+        print("[QC] Warning: Could not save to memory: %s" % e)
 
     # Save QC report
     output_dir = os.path.join(WORKSPACE, "qc_reports")

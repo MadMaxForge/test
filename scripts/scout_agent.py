@@ -83,9 +83,17 @@ def load_manifest(username):
 
 
 def get_image_files(username, max_images=6):
-    """Get list of image files for analysis (prefer slide1 and thumb images)."""
+    """Get list of image files for analysis (prefer slide1 and thumb images).
+    
+    Supports: photos (.jpg, .png), video thumbnails (_thumb.jpg),
+    story screenshots, reel thumbnails.
+    """
     img_dir = os.path.join(WORKSPACE, "downloads", username)
-    all_files = sorted(Path(img_dir).glob("*.jpg"))
+    all_files = sorted(
+        list(Path(img_dir).glob("*.jpg")) +
+        list(Path(img_dir).glob("*.png")) +
+        list(Path(img_dir).glob("*.webp"))
+    )
     image_files = [f for f in all_files if f.name not in ("manifest.json", "profile_pic.jpg")]
 
     priority = []
@@ -93,11 +101,23 @@ def get_image_files(username, max_images=6):
     for f in image_files:
         if "_thumb.jpg" in f.name or "_slide1.jpg" in f.name:
             priority.append(f)
+        elif "_story" in f.name or "_reel" in f.name:
+            priority.append(f)  # prioritize story/reel content
         else:
             others.append(f)
 
     selected = (priority + others)[:max_images]
     return selected
+
+
+def get_video_files(username):
+    """Get list of video files (reels, stories) for metadata analysis."""
+    vid_dir = os.path.join(WORKSPACE, "downloads", username)
+    videos = sorted(
+        list(Path(vid_dir).glob("*.mp4")) +
+        list(Path(vid_dir).glob("*.mov"))
+    )
+    return videos
 
 
 def encode_image_base64(filepath):
@@ -111,6 +131,15 @@ def build_vision_prompt(manifest, image_files):
     profile = manifest.get("profile", {})
     posts = manifest.get("posts", [])
 
+    # Collect content type statistics from posts
+    content_stats = {"photo": 0, "carousel": 0, "reel": 0, "story": 0, "video": 0}
+    for post in posts:
+        ptype = post.get("post_type", "photo")
+        if ptype in content_stats:
+            content_stats[ptype] += 1
+        else:
+            content_stats["photo"] += 1
+
     text_part = "Analyze this Instagram profile's visual style based on the provided images.\n\n"
     text_part += "Profile:\n"
     text_part += "- Username: @" + profile.get("username", "unknown") + "\n"
@@ -121,17 +150,28 @@ def build_vision_prompt(manifest, image_files):
     text_part += "- Total posts: " + str(profile.get("post_count", "N/A")) + "\n"
     text_part += "- Verified: " + str(profile.get("is_verified", False)) + "\n"
     text_part += "- Category: " + str(profile.get("category", "N/A")) + "\n"
-    text_part += "\nPost engagement data:\n"
+    text_part += "\nContent type breakdown: %s\n" % json.dumps(content_stats)
+    text_part += "\nPost engagement data (with content types):\n"
 
     for i, post in enumerate(posts[:12]):
         ptype = post.get("post_type", "photo")
         likes = post.get("likes", 0)
         comments = post.get("comments", 0)
-        text_part += "  Post %d: type=%s, likes=%s, comments=%s\n" % (i + 1, ptype, likes, comments)
+        views = post.get("views", post.get("video_views", 0))
+        duration = post.get("duration", "")
+        engagement = "likes=%s, comments=%s" % (likes, comments)
+        if views:
+            engagement += ", views=%s" % views
+        if duration:
+            engagement += ", duration=%ss" % duration
+        text_part += "  Post %d: type=%s, %s\n" % (i + 1, ptype, engagement)
 
     text_part += "\nI'm providing %d images from this profile.\n" % len(image_files)
     text_part += "For EACH image, analyze all 6 elements: background, clothing, pose, lighting, camera angle, mood.\n"
-    text_part += "Then provide an aggregate style profile summarizing the overall visual patterns.\n\n"
+    text_part += "Also identify the content type (feed photo, carousel slide, story, reel thumbnail).\n"
+    text_part += "For reels/stories, also note: camera movement, transitions, video pacing if visible from thumbnail.\n"
+    text_part += "Then provide an aggregate style profile summarizing the overall visual patterns.\n"
+    text_part += "Include a 'content_strategy' section analyzing the mix of photos/stories/reels.\n\n"
     text_part += "Image filenames: " + ", ".join(f.name for f in image_files) + "\n\n"
     text_part += "Output ONLY the JSON analysis object. No markdown."
 
@@ -350,6 +390,27 @@ def main():
 
     analysis["analyzed_at"] = datetime.now(timezone.utc).isoformat()
     analysis["images_analyzed"] = len(image_files) if not text_only else 0
+
+    # Save to memory database
+    try:
+        from agent_memory import AgentMemory
+        mem = AgentMemory()
+        mem.save_analysis(
+            username, analysis,
+            mode=analysis.get("analysis_mode", "vision"),
+            image_count=len(image_files) if not text_only else 0,
+        )
+        mem.mark_account_parsed(username)
+        mem.log_event("scout", "analysis_complete", {
+            "username": username,
+            "mode": analysis.get("analysis_mode", "vision"),
+            "images": len(image_files),
+        }, lesson="Analyzed @%s with %d images via %s" % (
+            username, len(image_files), analysis.get("analysis_mode", "vision")))
+        mem.close()
+        print("[Scout] Analysis saved to memory database")
+    except Exception as e:
+        print("[Scout] Warning: Could not save to memory: %s" % e)
 
     output_dir = os.path.join(WORKSPACE, "scout_analysis")
     os.makedirs(output_dir, exist_ok=True)
