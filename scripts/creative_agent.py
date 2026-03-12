@@ -269,21 +269,30 @@ def main():
         print("[Creative] Warning: Could not load memory: %s" % e)
         mem = None
 
-    # Load previous prompts from memory for deduplication
+    # Load ALL previous concepts from memory DB for cumulative deduplication
     previous_prompts_text = ""
     try:
-        prev_prompts_path = os.path.join(WORKSPACE, "creative_prompts", f"{username}_prompts.json")
-        if os.path.exists(prev_prompts_path):
-            with open(prev_prompts_path) as f:
-                prev_data = json.load(f)
-            prev_concepts = [p.get("concept", "") for p in prev_data.get("prompts", [])]
-            if prev_concepts:
-                previous_prompts_text = (
-                    "\n\n=== PREVIOUSLY USED CONCEPTS (DO NOT REPEAT) ===\n"
-                    "These concepts were already generated. You MUST create DIFFERENT ones:\n"
-                    + "\n".join(f"- {c}" for c in prev_concepts)
-                )
-                print(f"[Creative] Found {len(prev_concepts)} previous concepts to avoid")
+        all_past_concepts = []
+        # First: try memory DB (cumulative across all runs)
+        if mem and mem.conn:
+            all_past_concepts = mem.get_all_past_concepts(source_username=username, limit=50)
+            if all_past_concepts:
+                print(f"[Creative] Found {len(all_past_concepts)} past concepts in memory DB")
+        # Fallback: read last prompts file if DB returned nothing
+        if not all_past_concepts:
+            prev_prompts_path = os.path.join(WORKSPACE, "creative_prompts", f"{username}_prompts.json")
+            if os.path.exists(prev_prompts_path):
+                with open(prev_prompts_path) as f:
+                    prev_data = json.load(f)
+                all_past_concepts = [p.get("concept", "") for p in prev_data.get("prompts", []) if p.get("concept")]
+                if all_past_concepts:
+                    print(f"[Creative] Found {len(all_past_concepts)} past concepts from last file (DB empty)")
+        if all_past_concepts:
+            previous_prompts_text = (
+                "\n\n=== PREVIOUSLY USED CONCEPTS (DO NOT REPEAT) ===\n"
+                "These concepts were already generated in past runs. You MUST create COMPLETELY DIFFERENT ones:\n"
+                + "\n".join(f"- {c}" for c in all_past_concepts)
+            )
     except Exception as e:
         print(f"[Creative] Warning: Could not load previous prompts: {e}")
 

@@ -15,9 +15,12 @@ Usage: python3 pipeline_runner.py <username> [--count N] [--content-type TYPE]
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 SCRIPTS = os.path.join(WORKSPACE, "scripts")
@@ -164,6 +167,19 @@ def main():
     prompts_data = json.load(open(prompts_path))
     total_prompts = prompts_data.get("total_prompts", 0)
     print(f"[OK] Creative prompts: {total_prompts} prompts generated")
+
+    # Step 4b: Archive old images before generating new ones
+    if not skip_generate:
+        photos_dir = os.path.join(WORKSPACE, "output", "photos", username)
+        if os.path.exists(photos_dir):
+            old_images = list(Path(photos_dir).glob("*.png")) + list(Path(photos_dir).glob("*.jpg"))
+            if old_images:
+                archive_date = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+                archive_dir = os.path.join(photos_dir, "archive", archive_date)
+                os.makedirs(archive_dir, exist_ok=True)
+                for img in old_images:
+                    shutil.move(str(img), os.path.join(archive_dir, img.name))
+                print(f"[Pipeline] Archived {len(old_images)} old images to {archive_dir}")
 
     # Step 5: Image Generation via RunPod (optional)
     if not skip_generate:

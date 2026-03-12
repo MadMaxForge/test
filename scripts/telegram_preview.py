@@ -92,27 +92,11 @@ async def send_carousel_preview(username, chat_id=None):
         for r in qc_data.get("results", []):
             qc_results[r.get("image", "")] = r
 
-    # 1. Send header message
-    carousel_theme = post.get("carousel_theme", "N/A")
     image_count = post.get("image_count", 0)
-    qc_avg = post.get("qc_summary", {}).get("average_score", 0)
-    qc_passed = post.get("qc_summary", {}).get("passed", 0)
-    qc_total = post.get("qc_summary", {}).get("total", 0)
 
-    header = (
-        "<b>New Carousel Preview</b>\n"
-        "Profile: @%s\n"
-        "Theme: %s\n"
-        "Images: %d\n"
-        "QC: %d/%d passed (avg %.1f/10)\n"
-        "Status: %s"
-    ) % (username, carousel_theme, image_count, qc_passed, qc_total, qc_avg, post.get("status", "unknown"))
-
-    await bot.send_message(chat_id=target_chat, text=header, parse_mode=ParseMode.HTML)
-    print("[Telegram] Sent header")
-
-    # 2. Send each image with QC score
+    # 2. Send each image WITHOUT QC scores (clean photos only)
     photos_dir = os.path.join(WORKSPACE, "output", "photos", username)
+    sent_images = []
     for i, img_info in enumerate(post.get("images", [])):
         img_path = os.path.join(photos_dir, img_info.get("filename", ""))
         if not os.path.exists(img_path):
@@ -122,57 +106,33 @@ async def send_carousel_preview(username, chat_id=None):
             print("  [SKIP] Image not found: %s" % img_info.get("filename", ""))
             continue
 
-        qc_info = qc_results.get(img_info.get("filename", ""), {})
-        scores = qc_info.get("scores", {})
-        overall = scores.get("overall", 0)
-        issues = qc_info.get("issues", [])
-        artifact = qc_info.get("artifact_check", {})
-
-        caption = "Slide %d/%d | QC: %.1f/10" % (i + 1, image_count, overall)
-        if scores:
-            caption += "\nPrompt: %s | Tech: %s | Comp: %s" % (
-                scores.get("prompt_adherence", "?"),
-                scores.get("technical_quality", "?"),
-                scores.get("composition", "?"),
-            )
-        if artifact:
-            arms = artifact.get("arms_count", 2)
-            hands = artifact.get("hands_count", 2)
-            if arms != 2 or hands != 2:
-                caption += "\nARTIFACT: arms=%d, hands=%d" % (arms, hands)
-        if issues:
-            caption += "\nIssues: " + "; ".join(issues[:3])
-
         with open(img_path, "rb") as photo:
-            await bot.send_photo(chat_id=target_chat, photo=photo, caption=caption)
-        print("  [Telegram] Sent slide %d: %s (QC %.1f)" % (i + 1, img_info.get("filename", ""), overall))
+            await bot.send_photo(chat_id=target_chat, photo=photo)
+        sent_images.append(img_info)
+        print("  [Telegram] Sent slide %d: %s" % (i + 1, img_info.get("filename", "")))
 
-    # 3. Send caption + hashtags
+    # 3. Send caption + hashtags (clean, no QC info)
     post_caption = post.get("caption", "")
     hashtags = post.get("hashtags", [])
-    caption_msg = (
-        "<b>Caption:</b>\n%s\n\n"
-        "<b>Hashtags:</b>\n%s"
-    ) % (post_caption, " ".join(hashtags))
+    caption_msg = "%s\n\n%s" % (post_caption, " ".join(hashtags))
 
-    await bot.send_message(chat_id=target_chat, text=caption_msg, parse_mode=ParseMode.HTML)
+    await bot.send_message(chat_id=target_chat, text=caption_msg)
     print("[Telegram] Sent caption + hashtags")
 
-    # 4. Send approve/reject buttons
+    # 4. Send approve/reject/regenerate buttons
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Approve", callback_data="approve_%s" % username),
             InlineKeyboardButton("Reject", callback_data="reject_%s" % username),
         ],
         [
-            InlineKeyboardButton("Edit Caption", callback_data="edit_%s" % username),
             InlineKeyboardButton("Regenerate", callback_data="regen_%s" % username),
         ],
     ])
 
     await bot.send_message(
         chat_id=target_chat,
-        text="<b>Action required:</b> Review the carousel above and choose an action.",
+        text="Choose an action:",
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
@@ -385,7 +345,7 @@ def start_listener(chat_id=None):
     - reel_approve_<id> / reel_reject_<id> / reel_retry_<id> -- reel approvals
     """
     try:
-        from telegram import Update
+        from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.ext import Application, CallbackQueryHandler, ContextTypes
     except ImportError:
         print("[ERROR] python-telegram-bot not installed")
@@ -429,13 +389,47 @@ def start_listener(chat_id=None):
             await query.edit_message_text("Carousel for @%s REJECTED." % username)
             print("[Listener] Carousel @%s rejected" % username)
 
-        elif data.startswith("regen_"):
+        elif data.startswith("regen_") and not data.startswith("regen_photo_"):
             username = data.replace("regen_", "")
+            # Show photo number buttons for selection
+            image_count = 4  # default
+            if username in state:
+                post_path = state[username].get("post_path", "")
+                if post_path and os.path.exists(post_path):
+                    with open(post_path) as f:
+                        post_data = json.load(f)
+                    image_count = post_data.get("image_count", 4)
+
+            # Build number buttons (1, 2, 3, 4...)
+            num_buttons = []
+            for n in range(1, image_count + 1):
+                num_buttons.append(
+                    InlineKeyboardButton(str(n), callback_data="regen_photo_%s_%d" % (username, n))
+                )
+            keyboard = InlineKeyboardMarkup([num_buttons])
+            await query.edit_message_text(
+                "Which photo to regenerate? (left to right)",
+                reply_markup=keyboard,
+            )
+            print("[Listener] Carousel @%s regenerate — waiting for photo number" % username)
+
+        elif data.startswith("regen_photo_"):
+            # Parse: regen_photo_<username>_<number>
+            parts = data.replace("regen_photo_", "").rsplit("_", 1)
+            if len(parts) == 2:
+                username = parts[0]
+                photo_num = int(parts[1])
+            else:
+                username = parts[0]
+                photo_num = 1
             if username in state:
                 state[username]["status"] = "retry"
                 state[username]["decided_at"] = now
-            await query.edit_message_text("Carousel for @%s -- regenerating..." % username)
-            print("[Listener] Carousel @%s regenerate requested" % username)
+                state[username]["regen_photo"] = photo_num
+            await query.edit_message_text(
+                "Regenerating photo %d... Please wait." % photo_num
+            )
+            print("[Listener] Carousel @%s regenerate photo %d" % (username, photo_num))
 
         # Reel approvals
         elif data.startswith("reel_approve_"):

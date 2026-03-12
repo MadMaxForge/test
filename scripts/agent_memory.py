@@ -399,6 +399,37 @@ class AgentMemory:
     # Context Builder (for LLM prompts)
     # ──────────────────────────────────────────────
 
+    def get_all_past_concepts(self, source_username=None, limit=50):
+        """Get all previously generated concepts for cumulative deduplication."""
+        if source_username:
+            cur = self._execute(
+                """SELECT prompt_json FROM generation_history
+                   WHERE source_username = %s AND prompt_json IS NOT NULL
+                   ORDER BY created_at DESC LIMIT %s""",
+                (source_username, limit),
+            )
+        else:
+            cur = self._execute(
+                """SELECT prompt_json FROM generation_history
+                   WHERE prompt_json IS NOT NULL
+                   ORDER BY created_at DESC LIMIT %s""",
+                (limit,),
+            )
+        concepts = []
+        if cur:
+            for row in cur.fetchall():
+                pj = row.get("prompt_json")
+                if isinstance(pj, str):
+                    try:
+                        pj = json.loads(pj)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if isinstance(pj, dict):
+                    concept = pj.get("concept", "")
+                    if concept and concept not in concepts:
+                        concepts.append(concept)
+        return concepts
+
     def build_creative_context(self, content_type="feed", max_examples=5):
         """Build a context string for Creative Agent with learned patterns.
 
