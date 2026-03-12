@@ -26,11 +26,27 @@ WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 SCRIPTS = os.path.join(WORKSPACE, "scripts")
 
 
+def _load_env_file():
+    """Load all env vars from .env file so subprocesses inherit them."""
+    env_file = os.path.join(os.path.dirname(WORKSPACE), ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip()
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+
+
 def run_step(name, cmd):
     print(f"\n{'=' * 50}")
     print(f"  STEP: {name}")
     print(f"{'=' * 50}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900,
+                            env=os.environ.copy())
     print(result.stdout)
     if result.stderr:
         print(result.stderr)
@@ -46,7 +62,7 @@ def main():
         sys.exit(1)
 
     username = sys.argv[1]
-    count = 12
+    count = 12  # scrape count
     content_type = "feed"  # default
     skip_scrape = "--skip-scrape" in sys.argv
     skip_generate = "--skip-generate" in sys.argv
@@ -87,19 +103,19 @@ def main():
         print("[Pipeline] Skipping image generation step")
     start = time.time()
 
-    # Ensure API key is available
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        env_file = os.path.join(os.path.dirname(WORKSPACE), ".env")
-        if os.path.exists(env_file):
-            for line in open(env_file):
-                if line.startswith("OPENROUTER_API_KEY="):
-                    api_key = line.strip().split("=", 1)[1]
-                    os.environ["OPENROUTER_API_KEY"] = api_key
+    # Load ALL env vars from .env file so all subprocesses inherit them
+    _load_env_file()
 
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         print("[FAIL] OPENROUTER_API_KEY not found")
         sys.exit(1)
+
+    # Verify critical API keys are available
+    runpod_key = os.environ.get("RUNPOD_API_KEY", "")
+    evolink_key = os.environ.get("EVOLINK_API_KEY", "")
+    print(f"[Pipeline] API keys: OpenRouter={'OK' if api_key else 'MISSING'}, "
+          f"RunPod={'OK' if runpod_key else 'MISSING'}, Evolink={'OK' if evolink_key else 'MISSING'}")
 
     # Step 1: Scrape (optional)
     manifest_path = os.path.join(WORKSPACE, "downloads", username, "manifest.json")

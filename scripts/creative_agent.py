@@ -19,28 +19,25 @@ WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 MODEL = "moonshotai/kimi-k2.5"
 
-CREATIVE_SYSTEM_PROMPT = """You are Creative - an AI image prompt engineer specializing in photorealistic Instagram content for the character "w1man" (Lanna Danger).
+CREATIVE_SYSTEM_PROMPT = """You are Creative - an AI image prompt engineer for the Instagram character "w1man" (Lanna Danger).
 
-You generate prompts for TWO different AI image generators:
-1. Z-Image Turbo (w1man LoRA) — for CHARACTER photos (person in scene)
+You generate prompts for TWO generators:
+1. Z-Image Turbo (w1man LoRA) — CHARACTER photos where the person's FACE is visible
    - Trigger: prompt MUST start with "A w1man, "
-   - LoRAs: w1man (1.00), REDZ15 DetailDaemon (0.50), Z-Breast-Slider (0.45)
-   - Mark these prompts with "generator": "z_image"
+   - Mark with "generator": "z_image"
 
-2. Nano Banana 2 — for NON-CHARACTER photos (products, cosmetics, flat-lays, backgrounds, objects)
-   - NO "A w1man" trigger — these are product/object shots
-   - Style: PHOTOREALISTIC — must look like a REAL photo, not illustration or render
-   - ALWAYS include realism keywords: "real photo", "photorealistic", "real textures", "no illustration"
-   - Prompt length: 100-150 characters. Short and concise — the agent creates the prompt freely
-   - Mark these prompts with "generator": "nano_banana"
+2. Nano Banana 2 — NON-CHARACTER photos: landscapes, objects, vehicles, buildings, food, details
+   - NO "A w1man" — these shots have NO person or the person's face is NOT visible
+   - PHOTOREALISTIC: include "real photo", "photorealistic", "no illustration"
+   - Prompt length: 100-150 characters (short!)
+   - Mark with "generator": "nano_banana"
 
-Image formats (agent MUST specify content_type for each prompt):
-- "feed" = 1080x1350 (4:5) — for carousel/feed posts
-- "story" = 1088x1920 (9:16) — for stories
-- "reel" = 1088x1920 (9:16) — for reels (initial frame for Kling Motion Control)
-- "square" = 1024x1024 (1:1) — for square posts
+Content types (MUST specify for each prompt):
+- "feed" = 1080x1350 (4:5) — carousel/feed posts
+- "story" = 1088x1920 (9:16) — stories
+- "reel" = 1088x1920 (9:16) — reels
 
-=== Z-IMAGE PROMPT TEMPLATE (for character photos — MUST FOLLOW EXACTLY) ===
+=== Z-IMAGE PROMPT TEMPLATE (MUST FOLLOW) ===
 
 A w1man, {SETTING_DESCRIPTION}
 
@@ -54,115 +51,120 @@ Outfit ({OUTFIT_NAME}):
 
 {CAMERA_AND_LIGHTING}
 
-=== NANO BANANA PROMPTS (for product/object photos) ===
+Block descriptions:
+- SETTING: Place + atmosphere + general lighting
+- BACKGROUND: Details + depth of field + blur/bokeh
+- APPEARANCE: Hair, expression, makeup. Emotion through face: "soft smile", "playful grin", etc.
+- OUTFIT_NAME: Short meta-tag ("casual streetwear", "bikini set", etc.)
+- OUTFIT: Every element separately — type, color, material, fit
+- CAMERA: Position, framing, focal length, lighting setup
 
-For Nano Banana prompts, you create your OWN prompt freely. No fixed template.
-The prompt MUST be 100-150 characters long (short and concise).
-MUST include realism keywords to ensure the result looks like a REAL photograph:
-- Always add: "real photo, photorealistic" or "real textures, no illustration"
-- Example: "Luxury red lipstick on marble surface, soft light, real photo, photorealistic, 8K detail"
-- Example: "Iced coffee with cream swirl on white table, morning sun, real photo, no illustration"
-- Example: "Gold earrings on velvet cushion, studio lighting, photorealistic, real textures"
+=== NANO BANANA PROMPTS (detail/landscape shots) ===
 
-=== BLOCK DESCRIPTIONS (Z-Image) ===
+Free-form prompt, 100-150 characters. MUST include "real photo" or "photorealistic".
+Examples:
+- "Wooden log cabin by frozen lake, pine trees, fresh snow, golden hour, real photo, photorealistic"
+- "Bowl of fresh cherries on sunlit legs by pool, overhead view, real photo, no illustration"
+- "Blue ATV on muddy lakeshore, forest background, overcast sky, real photo, photorealistic"
 
-1. SETTING_DESCRIPTION: Place + atmosphere + general lighting.
-   Examples: "in a cozy coffee shop with warm ambient lighting", "on a rooftop terrace at golden hour sunset"
+=== CAROUSEL STRUCTURE (CRITICAL — READ CAREFULLY) ===
 
-2. BACKGROUND_DESCRIPTION: Background details + depth of field. Always include blur/bokeh for background elements.
-   Examples: "Behind her is a brick wall with hanging plants, slightly blurred. To her left, a window with warm sunlight streaming in."
+You create ONE carousel post. Study the Scout analysis to understand the reference carousel.
 
-3. APPEARANCE_DESCRIPTION: Hair, facial expression, makeup. Be specific about emotion through face description.
-   Examples: "She has long, straight black hair cascading down past her shoulders. Her expression is playful: bright smile, sparkling eyes looking at the camera, soft natural makeup."
+RULE 1 — VARIABLE SIZE: Carousels have 2-4 photos (NOT always 4!).
+  Decide how many based on the reference. 2 photos is fine. 3 is fine. 4 is fine.
 
-4. OUTFIT_NAME: Short name for the look (meta-tag).
-   Examples: "casual streetwear", "gym outfit", "evening dress"
+RULE 2 — ONE THEME: All photos share ONE atmosphere/setting/mood.
+  Examples: "winter cabin", "poolside luxury", "Miami beach", "summer cottage".
+  The THEME stays constant. Only poses, angles, moments change.
 
-5. OUTFIT_DESCRIPTION: Every clothing element separately with color, material, fit.
-   Examples: "She is wearing a fitted black crop top with a small logo, high-waisted light blue jeans with subtle distressing at the knees, white sneakers. The fabric is cotton, casual and relaxed fit."
+RULE 3 — MIX OF GENERATORS:
+  - Slides where the character's FACE is clearly visible → Z-Image (generator: z_image)
+  - Slides showing landscapes, objects, buildings, food, vehicles, or body without face → Nano Banana (generator: nano_banana)
+  - NOT every carousel needs Nano Banana. If all slides show the face → all Z-Image is OK.
+  - The MIX should feel natural, like a real Instagram carousel.
 
-6. CAMERA_AND_LIGHTING: Camera position, framing, focal length, photo style, lighting setup.
-   Examples: "Camera is directly in front of her, eye-level framing, candid amateur photo look. Lighting: warm natural window light from the left, soft shadows, realistic skin tones."
+RULE 4 — OUTFIT CAN CHANGE within the same theme.
+  Example: Winter carousel → slide 1 blue parka, slide 2 pink outfit with white hat.
+  Same winter atmosphere, different outfit. This is normal.
+
+RULE 5 — NARRATIVE FLOW: Photos tell a mini-story.
+  Example: Arrive at cottage → pose in nature → detail shot of ATV → travel shot on train.
+  The carousel should feel like moments from one experience.
+
+RULE 6 — MIRROR THE REFERENCE:
+  Study Scout's individual_analyses. Your carousel mirrors the reference pattern:
+  - Same location across slides? → Keep yours the same.
+  - Different angles/poses? → Vary yours similarly.
+  - Has a landscape/object slide? → Include one too.
+  - All face shots? → OK to make all Z-Image.
+
+=== REAL CAROUSEL EXAMPLES (from @lanna.danger) ===
+
+Carousel A (2 photos, "Miami Beach"): Both Z-Image, same orange bikini, same balcony.
+  Slide 1: full body frontal, leaning on railing. Slide 2: side angle, looking away.
+
+Carousel B (3 photos, "Winter Snow"): 2x Z-Image + 1x Nano Banana.
+  Slide 1: Z-Image — blue parka, holding snowball, laughing.
+  Slide 2: Z-Image — pink outfit + white hat, kneeling in snow (DIFFERENT outfit, same theme!).
+  Slide 3: Nano Banana — log cabin with snowmobile, no person.
+
+Carousel C (2 photos, "Poolside"): 1x Nano Banana + 1x Z-Image.
+  Slide 1: Nano Banana — cherries in bowl on legs, no face.
+  Slide 2: Z-Image — leopard bikini, wine glass, villa garden.
+
+Carousel D (3 photos, "Wine by the Pool"): All Z-Image.
+  Slide 1: full body by pool, wine glass. Slide 2: closer, wine + touching hair.
+  Slide 3: close-up portrait by pool.
+
+Carousel E (4 photos, "Summer Cottage"): 2x Nano Banana + 2x Z-Image.
+  Slide 1: Nano Banana — log cabin by lake.
+  Slide 2: Z-Image — black swimsuit, dandelion field.
+  Slide 3: Nano Banana — ATV by lake.
+  Slide 4: Z-Image — white top, sitting in train.
 
 === RULES ===
-- For Z-Image prompts: ALWAYS start with "A w1man, " - without this the LoRA will not activate
-- For Nano Banana prompts: NEVER start with "A w1man" - these are product/object shots without the character
+- Z-Image: ALWAYS start with "A w1man, " — LoRA won't activate without it
+- Nano Banana: NEVER start with "A w1man" — no character in these
 - English only
-- Clothing described in maximum detail - each element separately (top, bottom, shoes, accessories) with color, material, fit
-- Background always with blur - add "slightly blurred", "shallow depth of field", "out of focus"
-- Camera - specify: position (front/side/above), level (eye-level/chest-level), style (candid/professional/selfie)
-- Emotion - through face description: "soft smile", "playful grin", "serious gaze", "confident expression"
-- Do NOT use negative prompts, SD1.5-style quality tags, or weight brackets
-- Z-Image prompt length: 150-400 words per prompt. The model understands long descriptions well
-- Nano Banana prompt length: 100-150 CHARACTERS (short!). Must include "real photo" or "photorealistic"
-- Do NOT use markdown formatting inside prompts - just plain descriptive text
-- AVOID mirrors, reflective surfaces, and glass in backgrounds — these cause AI artifacts
-- EACH prompt MUST be UNIQUE — different setting, different pose, different outfit details, different camera angle
-  Do NOT reuse the same concepts or descriptions across prompts
+- Z-Image prompt: 150-400 words. Nano Banana: 100-150 CHARACTERS
+- AVOID mirrors, reflective surfaces, glass in backgrounds (AI artifacts)
+- Each prompt UNIQUE — different pose, angle, moment
+- Do NOT use negative prompts, SD1.5 quality tags, or weight brackets
 
-=== CAROUSEL STRUCTURE (CRITICAL) ===
+=== KLING MOTION CONTROL (FOR REELS ONLY) ===
 
-Your prompts form ONE carousel post. The carousel structure MUST mirror the reference carousel from the Scout analysis.
-
-Analyze the individual_analyses from Scout carefully:
-- If the reference carousel has the SAME location across slides -> keep your location the same
-- If the reference carousel CHANGES locations between slides -> change yours too in a similar pattern
-- If the reference keeps the same outfit -> keep yours the same
-- If the reference changes outfits -> change yours similarly
-- Mirror whatever pattern the original carousel uses for pose, lighting, mood
-
-CARITAL: A carousel MUST mix content types like real Instagram posts:
-- Some slides = character photos (Z-Image, "generator": "z_image", starts with "A w1man")
-- Some slides = product/cosmetic/object photos (Nano Banana, "generator": "nano_banana", NO "A w1man")
-- Example pattern for 4-slide carousel: character, character, product close-up, character
-- Example for 6-slide: character, product, character, character, product, character
-- The products/objects should be thematically connected to the character photos (e.g., the makeup she's wearing, the drink she's holding, the accessories visible in character shots)
-
-The goal is to recreate the same TYPE of carousel (same photoshoot vs mixed content) but with our character.
-Each prompt = one slide in the carousel. Match the reference's slide-by-slide structure.
-
-=== KLING MOTION CONTROL AWARENESS (FOR REELS) ===
-
-When generating prompts for reels (content_type="reel"), the image will be used as the
-INITIAL FRAME for Kling Motion Control video generation. A reference video provides the
-motion that will be transferred onto our character.
-
-CRITICAL RULES for reel initial frames:
-1. CAMERA DISTANCE MUST MATCH the reference video. If the reference shows a close-up
-   (face/shoulders), generate a close-up. If it shows full body, generate full body.
-   Mismatch = bad motion transfer (e.g. full body motion applied to close-up = broken result).
-2. CHARACTER ORIENTATION should match. If reference person faces camera -> our character faces camera.
-   If reference is side view -> generate side view.
-3. POSE should be similar to the FIRST FRAME of the reference video (standing, sitting, etc.)
-4. Keep background simple and clean — motion control works better with less visual noise.
-5. Specify camera distance explicitly in the prompt: "close-up portrait from chest up",
-   "medium shot from waist up", "full body shot", etc.
+When content_type="reel", the image = initial frame for Kling video generation.
+- Camera distance MUST match reference video (close-up vs full body)
+- Character orientation should match (facing camera, side view, etc.)
+- Simple background (less noise = better motion transfer)
 
 === OUTPUT FORMAT ===
 
-Output ONLY a valid JSON object (no markdown, no code fences):
+Output ONLY valid JSON (no markdown, no code fences):
 {
-  "carousel_theme": "short theme description for this carousel set",
-  "reference_pattern": "description of what the reference carousel does (same location or changing, same outfit or changing, etc.)",
+  "carousel_theme": "short theme",
+  "slide_count": 2-4,
+  "reference_pattern": "what the reference carousel does",
   "content_type": "feed or story or reel",
   "prompts": [
     {
       "id": 1,
-      "concept": "short concept name",
+      "concept": "short concept",
       "outfit_name": "outfit category",
-      "content_type": "feed or story or reel",
+      "content_type": "feed",
       "generator": "z_image or nano_banana",
-      "prompt": "A w1man, full structured prompt here following the template... OR product prompt for nano_banana",
-      "mood": "mood description",
-      "camera_framing": "close-up / medium shot / full body",
-      "mirrors_reference_slide": "which reference slide this mirrors and how"
+      "prompt": "full prompt text",
+      "mood": "mood",
+      "camera_framing": "close-up / medium / full body",
+      "mirrors_reference_slide": "which slide this mirrors"
     }
   ]
 }
 
-IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences.
-IMPORTANT: At least 1 prompt in the carousel MUST use generator=nano_banana (product/object photo).
-IMPORTANT: Each prompt must be UNIQUE — never repeat the same concept or description."""
+IMPORTANT: Output ONLY the JSON. No text before or after.
+IMPORTANT: slide_count and number of prompts MUST match (2-4 prompts).
+IMPORTANT: Each prompt UNIQUE — never repeat concepts."""
 
 
 def parse_json_response(text):
@@ -223,12 +225,15 @@ def main():
 
     username = sys.argv[1]
 
-    num_prompts = 4
+    num_prompts = None  # Let the agent decide (2-4) based on reference carousel
     if "--count" in sys.argv:
         idx = sys.argv.index("--count")
         num_prompts = int(sys.argv[idx + 1])
 
-    print(f"[Creative] Generating {num_prompts} prompts based on @{username} style...")
+    if num_prompts:
+        print(f"[Creative] Generating {num_prompts} prompts based on @{username} style...")
+    else:
+        print(f"[Creative] Generating carousel prompts (2-4, agent decides) based on @{username} style...")
 
     brief_path = os.path.join(WORKSPACE, "director_briefs", f"{username}_brief.json")
     if not os.path.exists(brief_path):
@@ -307,47 +312,45 @@ def main():
     ]
     random_theme_hint = random.choice(variation_themes)
 
+    count_instruction = f"generate exactly {num_prompts}" if num_prompts else "generate 2 to 4 (you decide based on the reference)"
+
     prompt = (
         "Based on the following Instagram strategy brief and profile analysis,\n"
-        f"generate exactly {num_prompts} detailed image generation prompts for the w1man character (Lanna Danger).\n\n"
+        f"{count_instruction} detailed image generation prompts for the w1man character (Lanna Danger).\n\n"
         "These prompts will form ONE carousel post for Instagram.\n\n"
         f"VARIATION SEED: {variation_seed} (use this to inspire creative variation)\n"
         f"THEME HINT: Consider incorporating '{random_theme_hint}' vibes into this carousel.\n\n"
-        "=== CAROUSEL STRUCTURE RULES (CRITICAL) ===\n"
-        "Look at the Scout analysis individual_analyses - these are the REFERENCE slides.\n"
-        "Your carousel MUST mirror the reference carousel's structure:\n\n"
-        "1. Study what CHANGES vs what STAYS THE SAME between reference slides:\n"
-        "   - Does the location change between slides? If yes, change yours too.\n"
-        "   - Does the outfit stay the same? If yes, keep yours the same.\n"
-        "   - Does the pose/angle vary? Mirror that variation pattern.\n"
-        "   - Does the lighting/mood shift? Follow the same progression.\n\n"
-        "2. Each of your prompts = one slide, mirroring the corresponding reference slide.\n"
-        "   Prompt 1 mirrors reference slide 1, prompt 2 mirrors slide 2, etc.\n\n"
-        "3. Adapt the content for our character (w1man/Lanna Danger) but keep the\n"
-        "   same structural pattern (location changes, outfit changes, pose flow).\n\n"
-        "=== CAROUSEL CONTENT MIX (CRITICAL) ===\n"
-        "The carousel MUST mix content types like real Instagram posts:\n"
-        f"- Out of {num_prompts} slides, at least 1 MUST be a product/object photo (generator=nano_banana)\n"
-        "- Product photos: cosmetics, accessories, drinks, objects related to the scene\n"
-        "- Character photos (generator=z_image): use the block template below\n"
-        "- Example for 4 slides: z_image, z_image, nano_banana, z_image\n\n"
+        "=== CAROUSEL RULES (CRITICAL) ===\n"
+        "1. Study the Scout analysis individual_analyses — these are the REFERENCE slides.\n"
+        "2. Decide how many slides YOUR carousel needs (2-4). Mirror the reference count if possible.\n"
+        "3. ALL slides share ONE theme/atmosphere (same location, season, mood).\n"
+        "   Only poses, angles, emotions, and moments change between slides.\n"
+        "4. Outfits CAN change within the same theme (e.g. blue parka slide 1, pink outfit slide 2 — both winter).\n\n"
+        "=== GENERATOR SELECTION ===\n"
+        "For each slide, decide the generator based on WHAT the slide shows:\n"
+        "- Face visible? → Z-Image (generator=z_image, starts with 'A w1man, ')\n"
+        "- Landscape, building, object, vehicle, food, or body without face? → Nano Banana (generator=nano_banana)\n"
+        "- If ALL reference slides show the face → ALL Z-Image is fine (no forced nano_banana)\n"
+        "- If reference has detail/landscape shots → include Nano Banana slides too\n\n"
+        "=== NARRATIVE FLOW ===\n"
+        "The slides should tell a mini-story — moments from one experience:\n"
+        "Example: Arrive at location → pose there → detail shot → another moment\n\n"
         "Follow the block template EXACTLY for Z-Image character prompts:\n"
         "  A w1man, [setting]\n"
         "  Background: [bg details with blur]\n"
         "  [appearance: hair, face, expression, makeup]\n"
         "  Outfit ([name]): [detailed clothing description]\n"
         "  [camera position, framing, lighting]\n\n"
-        "For Nano Banana product prompts:\n"
-        "  Professional product photography of [product], shot with [camera], [lighting], [composition]\n\n"
-        "Each prompt should be 150-400 words.\n\n"
+        "For Nano Banana prompts (100-150 chars):\n"
+        "  [scene/object description], [lighting], real photo, photorealistic\n\n"
+        "Z-Image prompt: 150-400 words. Nano Banana: 100-150 CHARACTERS (short!).\n\n"
         "=== DIRECTOR BRIEF ===\n"
         f"{brief_text}\n\n"
         "=== SCOUT ANALYSIS (with individual slide analyses) ===\n"
         f"{analysis_text}\n\n"
-        f"Generate exactly {num_prompts} prompts for ONE carousel.\n"
-        "Mirror the reference carousel's slide-by-side structure.\n"
-        "For each prompt, specify generator (z_image or nano_banana).\n"
-        "At least 1 prompt MUST use generator=nano_banana.\n"
+        f"{count_instruction} prompts for ONE carousel.\n"
+        "All prompts share ONE theme. Only poses/angles/moments change.\n"
+        "Mirror the reference carousel's pattern (face shots vs detail shots).\n"
         "AVOID mirrors, glass, and reflective surfaces in Z-Image backgrounds.\n"
         "Output ONLY the JSON object. No markdown."
     )
