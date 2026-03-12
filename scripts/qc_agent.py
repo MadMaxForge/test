@@ -15,6 +15,7 @@ import base64
 import requests
 import random
 import time
+import io
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -215,79 +216,116 @@ def evaluate_image(image_path, prompt_text):
     return parse_json_response(content)
 
 
-def evaluate_images_batch(image_paths, prompts_list):
-    """Evaluate ALL images in a single API call (batch mode) to save costs.
+def compress_image_for_qc(image_path, max_size=768, quality=80):
+    """Compress image for QC: resize to max_size px and convert to JPEG.
+    Returns (base64_string, mime_type)."""
+    try:
+        from PIL import Image
+        img = Image.open(image_path)
+        # Resize keeping aspect ratio
+        w, h = img.size
+        if max(w, h) > max_size:
+            scale = max_size / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Convert to JPEG for smaller payload
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return b64, "image/jpeg"
+    except ImportError:
+        # PIL not available, send raw but smaller
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        ext = Path(image_path).suffix.lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        return b64, mime
+
+
+def evaluate_images_batch(image_paths, prompts_list, batch_size=4):
+    """Evaluate images in batched API calls (batch_size images per call) to save costs.
+    Images are compressed to JPEG ~768px for smaller payloads.
     Returns a list of QC results, one per image."""
     if not OPENROUTER_API_KEY:
         print("[ERROR] OPENROUTER_API_KEY not set")
         return None
 
-    content_parts = []
-    text_intro = "Evaluate these %d AI-generated images for Instagram quality.\n\n" % len(image_paths)
+    all_results = []
 
-    for i, img_path in enumerate(image_paths):
-        prompt_text = prompts_list[i] if i < len(prompts_list) else ""
-        text_intro += "IMAGE %d (%s):\nPrompt: %s\n\n" % (i + 1, Path(img_path).name, prompt_text[:300])
+    # Split into sub-batches
+    for batch_start in range(0, len(image_paths), batch_size):
+        batch_end = min(batch_start + batch_size, len(image_paths))
+        batch_paths = image_paths[batch_start:batch_end]
+        batch_prompts = prompts_list[batch_start:batch_end]
 
-    text_intro += ("For EACH image, score all 6 criteria 0-10.\n"
-                   "Output ONLY a JSON object with this structure:\n"
-                   '{"results": [{"image": "filename", "scores": {"prompt_adherence": N, '
-                   '"character_consistency": N, "technical_quality": N, "composition": N, '
-                   '"content_safety": N, "mirror_reflection": N, "overall": N.N}, '
-                   '"pass": true/false, "artifact_check": {...}, "issues": [...], '
-                   '"notes": "..."}]}\nNo markdown fences.')
+        print("[QC] Batch %d-%d of %d images..." % (batch_start + 1, batch_end, len(image_paths)))
 
-    content_parts.append({"type": "text", "text": text_intro})
+        content_parts = []
+        text_intro = "Evaluate these %d AI-generated images for Instagram quality.\n\n" % len(batch_paths)
 
-    for img_path in image_paths:
-        with open(img_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        ext = Path(img_path).suffix.lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        content_parts.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + img_b64}})
+        for i, img_path in enumerate(batch_paths):
+            prompt_text = batch_prompts[i] if i < len(batch_prompts) else ""
+            text_intro += "IMAGE %d (%s):\nPrompt: %s\n\n" % (i + 1, Path(img_path).name, prompt_text[:300])
 
-    messages = [
-        {"role": "system", "content": QC_SYSTEM_PROMPT},
-        {"role": "user", "content": content_parts},
-    ]
+        text_intro += ("For EACH image, score all 6 criteria 0-10.\n"
+                       "Output ONLY a JSON object with this structure:\n"
+                       '{"results": [{"image": "filename", "scores": {"prompt_adherence": N, '
+                       '"character_consistency": N, "technical_quality": N, "composition": N, '
+                       '"content_safety": N, "mirror_reflection": N, "overall": N.N}, '
+                       '"pass": true/false, "artifact_check": {...}, "issues": [...], '
+                       '"notes": "..."}]}\nNo markdown fences.')
 
-    print("[QC] Batch evaluating %d images in single API call..." % len(image_paths))
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": "Bearer " + OPENROUTER_API_KEY,
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": MODEL,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 16000,
-        },
-        timeout=300,
-    )
+        content_parts.append({"type": "text", "text": text_intro})
 
-    if resp.status_code != 200:
-        print("[ERROR] QC batch API returned %d: %s" % (resp.status_code, resp.text[:300]))
-        return None
+        for img_path in batch_paths:
+            img_b64, mime = compress_image_for_qc(img_path)
+            content_parts.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + img_b64}})
 
-    data = resp.json()
-    choices = data.get("choices", [])
-    if not choices:
-        print("[ERROR] No choices in QC batch response")
-        return None
-    content = choices[0].get("message", {}).get("content")
-    if not content:
-        print("[ERROR] Empty content in QC batch response")
-        return None
+        messages = [
+            {"role": "system", "content": QC_SYSTEM_PROMPT},
+            {"role": "user", "content": content_parts},
+        ]
 
-    parsed = parse_json_response(content)
-    if parsed and "results" in parsed:
-        return parsed["results"]
-    elif parsed:
-        # Model returned single result or different format — wrap it
-        return [parsed]
-    return None
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer " + OPENROUTER_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": MODEL,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": 8000,
+            },
+            timeout=120,
+        )
+
+        if resp.status_code != 200:
+            print("[ERROR] QC batch API returned %d: %s" % (resp.status_code, resp.text[:300]))
+            return None
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            print("[ERROR] No choices in QC batch response")
+            return None
+        content = choices[0].get("message", {}).get("content")
+        if not content:
+            print("[ERROR] Empty content in QC batch response")
+            return None
+
+        parsed = parse_json_response(content)
+        if parsed and "results" in parsed:
+            all_results.extend(parsed["results"])
+        elif parsed:
+            all_results.append(parsed)
+        else:
+            print("[ERROR] Could not parse batch %d-%d response" % (batch_start + 1, batch_end))
+            return None
+
+    return all_results if len(all_results) >= len(image_paths) else None
 
 
 def regenerate_image(prompt_text):
