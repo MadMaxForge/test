@@ -24,7 +24,11 @@ You generate prompts for a Flux-based AI model (Z-Image Turbo) with these LoRAs:
 - REDZ15 DetailDaemon (0.50) - detail enhancement
 - Z-Breast-Slider (0.45) - body proportions
 
-Image format: 1088x1920 (vertical Instagram portrait)
+Image formats (agent MUST specify content_type for each prompt):
+- "feed" = 1080x1350 (4:5) — for carousel/feed posts
+- "story" = 1088x1920 (9:16) — for stories
+- "reel" = 1088x1920 (9:16) — for reels (initial frame for Kling Motion Control)
+- "square" = 1024x1024 (1:1) — for square posts
 
 === PROMPT TEMPLATE (MUST FOLLOW EXACTLY) ===
 
@@ -85,19 +89,39 @@ Analyze the individual_analyses from Scout carefully:
 The goal is to recreate the same TYPE of carousel (same photoshoot vs mixed content) but with our character.
 Each prompt = one slide in the carousel. Match the reference's slide-by-slide structure.
 
+=== KLING MOTION CONTROL AWARENESS (FOR REELS) ===
+
+When generating prompts for reels (content_type="reel"), the image will be used as the
+INITIAL FRAME for Kling Motion Control video generation. A reference video provides the
+motion that will be transferred onto our character.
+
+CRITICAL RULES for reel initial frames:
+1. CAMERA DISTANCE MUST MATCH the reference video. If the reference shows a close-up
+   (face/shoulders), generate a close-up. If it shows full body, generate full body.
+   Mismatch = bad motion transfer (e.g. full body motion applied to close-up = broken result).
+2. CHARACTER ORIENTATION should match. If reference person faces camera -> our character faces camera.
+   If reference is side view -> generate side view.
+3. POSE should be similar to the FIRST FRAME of the reference video (standing, sitting, etc.)
+4. Keep background simple and clean — motion control works better with less visual noise.
+5. Specify camera distance explicitly in the prompt: "close-up portrait from chest up",
+   "medium shot from waist up", "full body shot", etc.
+
 === OUTPUT FORMAT ===
 
 Output ONLY a valid JSON object (no markdown, no code fences):
 {
   "carousel_theme": "short theme description for this carousel set",
   "reference_pattern": "description of what the reference carousel does (same location or changing, same outfit or changing, etc.)",
+  "content_type": "feed or story or reel",
   "prompts": [
     {
       "id": 1,
       "concept": "short concept name",
       "outfit_name": "outfit category",
+      "content_type": "feed or story or reel",
       "prompt": "A w1man, full structured prompt here following the template...",
       "mood": "mood description",
+      "camera_framing": "close-up / medium shot / full body",
       "mirrors_reference_slide": "which reference slide this mirrors and how"
     }
   ]
@@ -262,6 +286,12 @@ def main():
             p["prompt"] = "A w1man, " + p.get("prompt", "")
 
     creative_output["total_prompts"] = len(creative_output.get("prompts", []))
+
+    # Ensure each prompt has content_type (default to carousel-level or "feed")
+    default_ct = creative_output.get("content_type", "feed")
+    for p in creative_output.get("prompts", []):
+        if "content_type" not in p:
+            p["content_type"] = default_ct
 
     output_dir = os.path.join(WORKSPACE, "creative_prompts")
     os.makedirs(output_dir, exist_ok=True)

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-Instagram Pipeline Runner — full 7-step automation:
-  Scrape → Scout → Director → Creative → Generate → QC → Publish (→ Telegram preview)
-Usage: python3 pipeline_runner.py <username> [--count N] [--skip-scrape] [--skip-generate] [--limit-images N] [--skip-telegram]
+Instagram Pipeline Runner - full automation:
+  Scrape > Scout > Director > Creative > Generate > QC > Publish (> Telegram preview)
+
+Content types:
+  --content-type feed    : carousel/feed posts (4:5 aspect ratio)
+  --content-type story   : stories (9:16)
+  --content-type reel    : reels (9:16) - includes Kling Motion Control step
+
+Usage: python3 pipeline_runner.py <username> [--count N] [--content-type TYPE]
+       [--skip-scrape] [--skip-generate] [--limit-images N] [--skip-telegram]
+       [--reference-video PATH] [--start-image PATH]
 """
 
 import json
@@ -36,21 +44,40 @@ def main():
 
     username = sys.argv[1]
     count = 12
+    content_type = "feed"  # default
     skip_scrape = "--skip-scrape" in sys.argv
     skip_generate = "--skip-generate" in sys.argv
     skip_telegram = "--skip-telegram" in sys.argv
     limit_images = None
+    reference_video = None
+    start_image = None
 
     if "--count" in sys.argv:
         idx = sys.argv.index("--count")
         count = int(sys.argv[idx + 1])
 
+    if "--content-type" in sys.argv:
+        idx = sys.argv.index("--content-type")
+        content_type = sys.argv[idx + 1]
+
     if "--limit-images" in sys.argv:
         idx = sys.argv.index("--limit-images")
         limit_images = int(sys.argv[idx + 1])
 
-    print(f"[Pipeline] Starting for @{username} ({count} posts)")
+    if "--reference-video" in sys.argv:
+        idx = sys.argv.index("--reference-video")
+        reference_video = sys.argv[idx + 1]
+
+    if "--start-image" in sys.argv:
+        idx = sys.argv.index("--start-image")
+        start_image = sys.argv[idx + 1]
+
+    print(f"[Pipeline] Starting for @{username} ({count} posts, content_type={content_type})")
     print(f"[Pipeline] Workspace: {WORKSPACE}")
+    if content_type == "reel":
+        print(f"[Pipeline] Reel mode: will generate Z-Image frame + Kling Motion Control video")
+        if reference_video:
+            print(f"[Pipeline] Reference video: {reference_video}")
     if skip_scrape:
         print("[Pipeline] Skipping scrape step (using existing data)")
     if skip_generate:
@@ -142,7 +169,7 @@ def main():
     if not skip_generate:
         limit_flag = f" --limit {limit_images}" if limit_images else ""
         ok = run_step(
-            "RunPod Z-Image Turbo (Image Generation)",
+            f"RunPod Z-Image Turbo (Image Generation, {content_type})",
             f"cd {WORKSPACE} && python3 {SCRIPTS}/runpod_generator.py {username}{limit_flag}"
         )
         if not ok:
@@ -154,6 +181,44 @@ def main():
             print(f"[OK] Generation: {gen_log['total_success']}/{gen_log['total_requested']} images")
     else:
         print("\n[SKIP] Image generation skipped (--skip-generate)")
+
+    # Step 5b: Kling Motion Control (only for reels)
+    kling_result = None
+    if content_type == "reel" and not skip_generate:
+        # For reels, we need a reference video and a start image (generated in step 5)
+        if reference_video:
+            # Use the first generated image as the start frame if not specified
+            if not start_image:
+                output_dir = os.path.join(WORKSPACE, "output", "photos", username)
+                if os.path.exists(output_dir):
+                    from pathlib import Path
+                    images = sorted(Path(output_dir).glob("*.png"))
+                    if images:
+                        start_image = str(images[0])
+                        print(f"[Pipeline] Using generated image as start frame: {start_image}")
+
+            if start_image:
+                ok = run_step(
+                    "Kling Motion Control (Video Generation)",
+                    f"cd {WORKSPACE} && python3 {SCRIPTS}/kling_motion_control.py "
+                    f"--motion-control {reference_video} {start_image} "
+                    f"--character-orientation image"
+                )
+                if ok:
+                    # Find the generated video
+                    reels_dir = os.path.join(WORKSPACE, "output", "reels")
+                    if os.path.exists(reels_dir):
+                        from pathlib import Path
+                        videos = sorted(Path(reels_dir).glob("*.mp4"), reverse=True)
+                        if videos:
+                            kling_result = str(videos[0])
+                            print(f"[OK] Kling video generated: {kling_result}")
+                else:
+                    print("[WARN] Kling Motion Control had issues, check logs above")
+            else:
+                print("[WARN] No start image available for Kling Motion Control")
+        else:
+            print("[WARN] No reference video provided for reel mode (use --reference-video PATH)")
 
     # Step 6: QC — Quality Check (only if images were generated)
     qc_report = None
@@ -215,6 +280,7 @@ def main():
     print(f"  PIPELINE COMPLETE ({elapsed:.0f}s)")
     print(f"{'=' * 50}")
     print(f"  Profile: @{username}")
+    print(f"  Content type: {content_type}")
     print(f"  Posts scraped: {manifest['total_posts_scraped']}")
     print(f"  Prompts generated: {total_prompts}")
     if qc_report:
@@ -222,6 +288,8 @@ def main():
     if post_path:
         post_data = json.load(open(post_path))
         print(f"  Post: {post_data.get('image_count', 0)} images, caption + {len(post_data.get('hashtags', []))} hashtags")
+    if kling_result:
+        print(f"  Reel video: {kling_result}")
     print(f"  Files:")
     print(f"    Manifest:  {manifest_path}")
     print(f"    Analysis:  {analysis_path}")
@@ -235,6 +303,8 @@ def main():
         print(f"    QC Report: {qc_path}")
     if post_path:
         print(f"    Post:      {post_path}")
+    if kling_result:
+        print(f"    Reel:      {kling_result}")
     print(f"{'=' * 50}")
 
 

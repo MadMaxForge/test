@@ -25,6 +25,16 @@ RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT = os.environ.get("RUNPOD_ENDPOINT", "4ijgr28bctaysk")
 BASE_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}"
 
+# Aspect ratio presets for Instagram content types
+# Maps content_type -> (width, height)
+ASPECT_RATIOS = {
+    "feed": (1080, 1350),       # 4:5 — Instagram feed / carousel
+    "story": (1088, 1920),      # 9:16 — Stories
+    "reel": (1088, 1920),       # 9:16 — Reels
+    "square": (1024, 1024),     # 1:1 — Square post
+    "default": (1088, 1920),    # 9:16 — Default (vertical portrait)
+}
+
 # ComfyUI Workflow template — only prompt (node 7) and seed (node 10) change
 WORKFLOW = {
     "1": {
@@ -133,14 +143,26 @@ WORKFLOW = {
 }
 
 
-def generate_image(prompt, poll_interval=5, max_wait=900):
+def generate_image(prompt, content_type="default", poll_interval=5, max_wait=900):
     """
     Submit a generation job to RunPod and poll until complete.
     Returns PNG image bytes on success, raises Exception on failure.
+    
+    Args:
+        prompt: Text prompt for image generation
+        content_type: 'feed' (4:5), 'story' (9:16), 'reel' (9:16), 'square' (1:1), 'default' (9:16)
+        poll_interval: Seconds between status checks
+        max_wait: Maximum wait time in seconds
     """
     workflow = json.loads(json.dumps(WORKFLOW))
     workflow["7"]["inputs"]["text"] = prompt
     workflow["10"]["inputs"]["seed"] = random.randint(1, 2**32)
+    
+    # Set dimensions based on content type
+    width, height = ASPECT_RATIOS.get(content_type, ASPECT_RATIOS["default"])
+    workflow["9"]["inputs"]["width"] = width
+    workflow["9"]["inputs"]["height"] = height
+    print(f"[RunPod] Content type: {content_type} ({width}x{height})")
 
     headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
 
@@ -315,6 +337,8 @@ def main():
     parser.add_argument("--prompt", help="Generate a single image from a prompt")
     parser.add_argument("--test", action="store_true", help="Test endpoint with a simple prompt")
     parser.add_argument("--limit", type=int, help="Limit number of images to generate")
+    parser.add_argument("--content-type", choices=["feed", "story", "reel", "square", "default"],
+                        default="default", help="Content type: feed (4:5), story/reel (9:16), square (1:1)")
 
     args = parser.parse_args()
 
@@ -327,7 +351,7 @@ def main():
             print("[WARN] Prompt should start with 'A w1man, ' for LoRA activation")
             args.prompt = "A w1man, " + args.prompt
         try:
-            img_bytes = generate_image(args.prompt)
+            img_bytes = generate_image(args.prompt, content_type=args.content_type)
             output_dir = os.path.join(WORKSPACE, "output", "photos")
             os.makedirs(output_dir, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
