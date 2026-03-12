@@ -140,6 +140,9 @@ def build_vision_prompt(manifest, image_files):
 
 def parse_json_response(text):
     """Robustly parse JSON from LLM response."""
+    if text is None:
+        print("[ERROR] Received None response from API")
+        return {"error": "None response", "profile_summary": "Analysis failed"}
     text = text.strip()
     try:
         return json.loads(text)
@@ -182,6 +185,23 @@ def parse_json_response(text):
         except json.JSONDecodeError:
             pass
 
+    # Last resort: try to repair truncated JSON
+    start = text.find('{')
+    if start >= 0:
+        candidate = text[start:]
+        open_b = candidate.count('{') - candidate.count('}')
+        open_a = candidate.count('[') - candidate.count(']')
+        if open_b > 0 or open_a > 0:
+            # Find last complete value
+            last_complete = max(candidate.rfind('"'), candidate.rfind('}'), candidate.rfind(']'))
+            if last_complete > 0:
+                candidate = candidate[:last_complete + 1]
+            candidate += ']' * max(0, open_a) + '}' * max(0, open_b)
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+
     print("[ERROR] Could not parse JSON from response:\n" + text[:500])
     sys.exit(1)
 
@@ -220,7 +240,7 @@ def call_openrouter_vision(text_prompt, image_files):
             "model": MODEL,
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 6000,
+            "max_tokens": 16000,
         },
         timeout=180,
     )
@@ -230,7 +250,14 @@ def call_openrouter_vision(text_prompt, image_files):
         sys.exit(1)
 
     data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    choices = data.get("choices", [])
+    if not choices:
+        print("[ERROR] No choices in API response: %s" % str(data)[:500])
+        return {"error": "no choices", "profile_summary": "Analysis failed"}
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        print("[ERROR] Empty content in API response")
+        return {"error": "empty content", "profile_summary": "Analysis failed"}
     return parse_json_response(content)
 
 
@@ -266,7 +293,14 @@ def call_openrouter_text(prompt):
         sys.exit(1)
 
     data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    choices = data.get("choices", [])
+    if not choices:
+        print("[ERROR] No choices in API response: %s" % str(data)[:500])
+        return {"error": "no choices", "profile_summary": "Analysis failed"}
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        print("[ERROR] Empty content in API response")
+        return {"error": "empty content", "profile_summary": "Analysis failed"}
     return parse_json_response(content)
 
 

@@ -132,6 +132,9 @@ IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences."""
 
 def parse_json_response(text):
     """Robustly parse JSON from LLM response."""
+    if text is None:
+        print("[ERROR] Received None response from API")
+        return None
     text = text.strip()
     try:
         return json.loads(text)
@@ -274,8 +277,18 @@ def main():
         sys.exit(1)
 
     data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    choices = data.get("choices", [])
+    if not choices:
+        print(f"[ERROR] No choices in API response: {str(data)[:500]}")
+        sys.exit(1)
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        print(f"[ERROR] Empty content in API response: {str(data)[:500]}")
+        sys.exit(1)
     creative_output = parse_json_response(content)
+    if creative_output is None:
+        print("[ERROR] Failed to parse creative output JSON")
+        sys.exit(1)
 
     creative_output["generated_at"] = datetime.now(timezone.utc).isoformat()
     creative_output["username"] = username
