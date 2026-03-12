@@ -364,6 +364,134 @@ def motion_control(reference_video_path, start_image_path, prompt="", character_
     return _extract_video(data)
 
 
+def analyze_reference_video(reference_video_path):
+    """
+    Analyze a reference video to extract motion/pose/camera information.
+    Uses OpenRouter vision API to describe the first frame and motion pattern.
+    Returns a dict with analysis that can be used to generate a matching Z-Image frame.
+    
+    Workflow:
+      1. Extract first frame description from reference video
+      2. Determine camera distance (close-up / medium / full body)
+      3. Determine character orientation (facing camera / side / back)
+      4. Determine pose (standing / sitting / walking / dancing)
+      5. Generate a Z-Image prompt that matches the reference video's first frame
+    """
+    import subprocess as sp
+    
+    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+    if not OPENROUTER_API_KEY:
+        # Try loading from .env
+        try:
+            from dotenv import load_dotenv
+            env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+            if os.path.exists(env_path):
+                load_dotenv(env_path)
+                OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+        except ImportError:
+            pass
+    
+    if not OPENROUTER_API_KEY:
+        print("[Kling] WARNING: OPENROUTER_API_KEY not set, skipping video analysis")
+        return None
+    
+    # Try to extract first frame using ffmpeg
+    first_frame_path = None
+    temp_frame = os.path.join(WORKSPACE, "temp_ref_frame.jpg")
+    try:
+        result = sp.run(
+            ["ffmpeg", "-y", "-i", reference_video_path, "-frames:v", "1",
+             "-q:v", "2", temp_frame],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and os.path.exists(temp_frame):
+            first_frame_path = temp_frame
+            print(f"[Kling] Extracted first frame from reference video")
+    except Exception as e:
+        print(f"[Kling] Could not extract frame with ffmpeg: {e}")
+    
+    if not first_frame_path:
+        print("[Kling] No first frame extracted, using text-only analysis")
+        return {
+            "camera_distance": "medium",
+            "orientation": "facing_camera",
+            "pose": "standing",
+            "z_image_prompt_hint": "medium shot, facing camera, natural pose",
+            "analyzed": False,
+        }
+    
+    # Analyze frame with vision API
+    import base64 as b64mod
+    with open(first_frame_path, "rb") as f:
+        frame_b64 = b64mod.b64encode(f.read()).decode("utf-8")
+    
+    analysis_prompt = (
+        "Analyze this video frame for motion control reference. Answer in JSON only:\n"
+        "{\n"
+        '  "camera_distance": "close-up / medium / full_body",\n'
+        '  "orientation": "facing_camera / side_left / side_right / back",\n'
+        '  "pose": "standing / sitting / walking / dancing / leaning / other",\n'
+        '  "background_type": "indoor / outdoor / studio / other",\n'
+        '  "lighting": "natural / studio / dramatic / soft",\n'
+        '  "motion_hint": "brief description of likely motion in this scene",\n'
+        '  "z_image_prompt_hint": "camera and pose description for generating a matching first frame"\n'
+        "}\n"
+        "Output ONLY JSON. No markdown."
+    )
+    
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "google/gemini-2.0-flash-lite-001",
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/jpeg;base64,{frame_b64}"
+                        }},
+                        {"type": "text", "text": analysis_prompt},
+                    ]}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 500,
+            },
+            timeout=60,
+        )
+        
+        if resp.status_code == 200:
+            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group())
+                analysis["analyzed"] = True
+                print(f"[Kling] Reference video analysis: distance={analysis.get('camera_distance')}, "
+                      f"pose={analysis.get('pose')}, orientation={analysis.get('orientation')}")
+                # Clean up temp file
+                if os.path.exists(temp_frame):
+                    os.remove(temp_frame)
+                return analysis
+    except Exception as e:
+        print(f"[Kling] Vision analysis failed: {e}")
+    
+    # Clean up temp file
+    if os.path.exists(temp_frame):
+        os.remove(temp_frame)
+    
+    return {
+        "camera_distance": "medium",
+        "orientation": "facing_camera",
+        "pose": "standing",
+        "z_image_prompt_hint": "medium shot, facing camera, natural pose",
+        "analyzed": False,
+    }
+
+
 def generate_reels_from_brief(username, limit=None):
     """Generate reels from director brief reel items."""
     brief_path = os.path.join(WORKSPACE, "director_briefs", f"{username}_brief.json")
@@ -401,6 +529,20 @@ def generate_reels_from_brief(username, limit=None):
         print(f"\n[{i + 1}/{len(reel_items)}] Generating reel: {concept}")
 
         try:
+            # If we have a reference video, analyze it first to generate matching Z-Image frame
+            if ref_video and os.path.exists(ref_video) and not start_img:
+                print(f"  [Kling] Analyzing reference video to generate matching first frame...")
+                analysis = analyze_reference_video(ref_video)
+                if analysis:
+                    # Save analysis for Telegram preview
+                    analysis_path = os.path.join(output_dir, f"ref_analysis_{i + 1}.json")
+                    with open(analysis_path, "w") as af:
+                        json.dump(analysis, af, indent=2)
+                    print(f"  [Kling] Reference analysis saved: {analysis_path}")
+                    # The Z-Image frame generation will be triggered separately
+                    # (pipeline_runner handles the Z-Image -> Telegram approval -> Kling flow)
+                    item["reference_analysis"] = analysis
+
             if ref_video and start_img and os.path.exists(ref_video) and os.path.exists(start_img):
                 # Motion control mode
                 video_bytes, video_url = motion_control(ref_video, start_img, prompt=prompt)

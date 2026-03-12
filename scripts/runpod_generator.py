@@ -269,11 +269,22 @@ def generate_from_prompts(username, limit=None):
     with open(prompts_path) as f:
         creative_data = json.load(f)
 
-    prompts = creative_data.get("prompts", [])
+    all_prompts = creative_data.get("prompts", [])
+    
+    # Only process z_image prompts (character photos). Nano Banana prompts go to nano_banana_generator.py
+    prompts = [
+        p for p in all_prompts
+        if p.get("generator", "z_image") == "z_image"
+    ]
+    
+    skipped_nano = len(all_prompts) - len(prompts)
+    if skipped_nano > 0:
+        print(f"[RunPod] Skipping {skipped_nano} nano_banana prompts (handled by nano_banana_generator.py)")
+    
     if limit:
         prompts = prompts[:limit]
 
-    print(f"[RunPod] Generating {len(prompts)} images for @{username}...")
+    print(f"[RunPod] Generating {len(prompts)} Z-Image character images for @{username}...")
 
     output_dir = os.path.join(WORKSPACE, "output", "photos", username)
     os.makedirs(output_dir, exist_ok=True)
@@ -286,7 +297,9 @@ def generate_from_prompts(username, limit=None):
         print(f"  Prompt: {prompt_text[:100]}...")
 
         try:
-            img_bytes = generate_image(prompt_text)
+            # Use per-prompt content_type for correct aspect ratio (4:5 for feed, 9:16 for story/reel)
+            prompt_ct = p.get("content_type", "feed")
+            img_bytes = generate_image(prompt_text, content_type=prompt_ct)
             safe_concept = concept.replace(" ", "_").replace("/", "_")[:50]
             filename = f"{username}_{safe_concept}_{i + 1}.png"
             filepath = os.path.join(output_dir, filename)

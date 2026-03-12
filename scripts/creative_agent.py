@@ -10,6 +10,8 @@ import json
 import os
 import re
 import sys
+import random
+import hashlib
 import requests
 from datetime import datetime, timezone
 
@@ -19,10 +21,18 @@ MODEL = "moonshotai/kimi-k2.5"
 
 CREATIVE_SYSTEM_PROMPT = """You are Creative - an AI image prompt engineer specializing in photorealistic Instagram content for the character "w1man" (Lanna Danger).
 
-You generate prompts for a Flux-based AI model (Z-Image Turbo) with these LoRAs:
-- w1man (1.00) - main character trigger
-- REDZ15 DetailDaemon (0.50) - detail enhancement
-- Z-Breast-Slider (0.45) - body proportions
+You generate prompts for TWO different AI image generators:
+1. Z-Image Turbo (w1man LoRA) — for CHARACTER photos (person in scene)
+   - Trigger: prompt MUST start with "A w1man, "
+   - LoRAs: w1man (1.00), REDZ15 DetailDaemon (0.50), Z-Breast-Slider (0.45)
+   - Mark these prompts with "generator": "z_image"
+
+2. Nano Banana 2 — for NON-CHARACTER photos (products, cosmetics, flat-lays, backgrounds, objects)
+   - NO "A w1man" trigger — these are product/object shots
+   - Style: PHOTOREALISTIC — must look like a REAL photo, not illustration or render
+   - ALWAYS include realism keywords: "real photo", "photorealistic", "real textures", "no illustration"
+   - Prompt length: 100-150 characters. Short and concise — the agent creates the prompt freely
+   - Mark these prompts with "generator": "nano_banana"
 
 Image formats (agent MUST specify content_type for each prompt):
 - "feed" = 1080x1350 (4:5) — for carousel/feed posts
@@ -30,7 +40,7 @@ Image formats (agent MUST specify content_type for each prompt):
 - "reel" = 1088x1920 (9:16) — for reels (initial frame for Kling Motion Control)
 - "square" = 1024x1024 (1:1) — for square posts
 
-=== PROMPT TEMPLATE (MUST FOLLOW EXACTLY) ===
+=== Z-IMAGE PROMPT TEMPLATE (for character photos — MUST FOLLOW EXACTLY) ===
 
 A w1man, {SETTING_DESCRIPTION}
 
@@ -44,7 +54,17 @@ Outfit ({OUTFIT_NAME}):
 
 {CAMERA_AND_LIGHTING}
 
-=== BLOCK DESCRIPTIONS ===
+=== NANO BANANA PROMPTS (for product/object photos) ===
+
+For Nano Banana prompts, you create your OWN prompt freely. No fixed template.
+The prompt MUST be 100-150 characters long (short and concise).
+MUST include realism keywords to ensure the result looks like a REAL photograph:
+- Always add: "real photo, photorealistic" or "real textures, no illustration"
+- Example: "Luxury red lipstick on marble surface, soft light, real photo, photorealistic, 8K detail"
+- Example: "Iced coffee with cream swirl on white table, morning sun, real photo, no illustration"
+- Example: "Gold earrings on velvet cushion, studio lighting, photorealistic, real textures"
+
+=== BLOCK DESCRIPTIONS (Z-Image) ===
 
 1. SETTING_DESCRIPTION: Place + atmosphere + general lighting.
    Examples: "in a cozy coffee shop with warm ambient lighting", "on a rooftop terrace at golden hour sunset"
@@ -65,15 +85,20 @@ Outfit ({OUTFIT_NAME}):
    Examples: "Camera is directly in front of her, eye-level framing, candid amateur photo look. Lighting: warm natural window light from the left, soft shadows, realistic skin tones."
 
 === RULES ===
-- ALWAYS start with "A w1man, " - without this the LoRA will not activate
+- For Z-Image prompts: ALWAYS start with "A w1man, " - without this the LoRA will not activate
+- For Nano Banana prompts: NEVER start with "A w1man" - these are product/object shots without the character
 - English only
 - Clothing described in maximum detail - each element separately (top, bottom, shoes, accessories) with color, material, fit
 - Background always with blur - add "slightly blurred", "shallow depth of field", "out of focus"
 - Camera - specify: position (front/side/above), level (eye-level/chest-level), style (candid/professional/selfie)
 - Emotion - through face description: "soft smile", "playful grin", "serious gaze", "confident expression"
 - Do NOT use negative prompts, SD1.5-style quality tags, or weight brackets
-- Optimal length: 150-400 words per prompt. The model understands long descriptions well
+- Z-Image prompt length: 150-400 words per prompt. The model understands long descriptions well
+- Nano Banana prompt length: 100-150 CHARACTERS (short!). Must include "real photo" or "photorealistic"
 - Do NOT use markdown formatting inside prompts - just plain descriptive text
+- AVOID mirrors, reflective surfaces, and glass in backgrounds — these cause AI artifacts
+- EACH prompt MUST be UNIQUE — different setting, different pose, different outfit details, different camera angle
+  Do NOT reuse the same concepts or descriptions across prompts
 
 === CAROUSEL STRUCTURE (CRITICAL) ===
 
@@ -85,6 +110,13 @@ Analyze the individual_analyses from Scout carefully:
 - If the reference keeps the same outfit -> keep yours the same
 - If the reference changes outfits -> change yours similarly
 - Mirror whatever pattern the original carousel uses for pose, lighting, mood
+
+CARITAL: A carousel MUST mix content types like real Instagram posts:
+- Some slides = character photos (Z-Image, "generator": "z_image", starts with "A w1man")
+- Some slides = product/cosmetic/object photos (Nano Banana, "generator": "nano_banana", NO "A w1man")
+- Example pattern for 4-slide carousel: character, character, product close-up, character
+- Example for 6-slide: character, product, character, character, product, character
+- The products/objects should be thematically connected to the character photos (e.g., the makeup she's wearing, the drink she's holding, the accessories visible in character shots)
 
 The goal is to recreate the same TYPE of carousel (same photoshoot vs mixed content) but with our character.
 Each prompt = one slide in the carousel. Match the reference's slide-by-slide structure.
@@ -119,7 +151,8 @@ Output ONLY a valid JSON object (no markdown, no code fences):
       "concept": "short concept name",
       "outfit_name": "outfit category",
       "content_type": "feed or story or reel",
-      "prompt": "A w1man, full structured prompt here following the template...",
+      "generator": "z_image or nano_banana",
+      "prompt": "A w1man, full structured prompt here following the template... OR product prompt for nano_banana",
       "mood": "mood description",
       "camera_framing": "close-up / medium shot / full body",
       "mirrors_reference_slide": "which reference slide this mirrors and how"
@@ -127,7 +160,9 @@ Output ONLY a valid JSON object (no markdown, no code fences):
   ]
 }
 
-IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences."""
+IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences.
+IMPORTANT: At least 1 prompt in the carousel MUST use generator=nano_banana (product/object photo).
+IMPORTANT: Each prompt must be UNIQUE — never repeat the same concept or description."""
 
 
 def parse_json_response(text):
@@ -234,10 +269,41 @@ def main():
         print("[Creative] Warning: Could not load memory: %s" % e)
         mem = None
 
+    # Load previous prompts from memory for deduplication
+    previous_prompts_text = ""
+    try:
+        prev_prompts_path = os.path.join(WORKSPACE, "creative_prompts", f"{username}_prompts.json")
+        if os.path.exists(prev_prompts_path):
+            with open(prev_prompts_path) as f:
+                prev_data = json.load(f)
+            prev_concepts = [p.get("concept", "") for p in prev_data.get("prompts", [])]
+            if prev_concepts:
+                previous_prompts_text = (
+                    "\n\n=== PREVIOUSLY USED CONCEPTS (DO NOT REPEAT) ===\n"
+                    "These concepts were already generated. You MUST create DIFFERENT ones:\n"
+                    + "\n".join(f"- {c}" for c in prev_concepts)
+                )
+                print(f"[Creative] Found {len(prev_concepts)} previous concepts to avoid")
+    except Exception as e:
+        print(f"[Creative] Warning: Could not load previous prompts: {e}")
+
+    # Random variation seed to ensure different outputs each run
+    variation_seed = random.randint(1, 10000)
+    variation_themes = [
+        "luxurious elegance", "casual street style", "sporty active", "cozy home vibes",
+        "glamorous night out", "boho chic", "minimalist aesthetic", "tropical vacation",
+        "urban explorer", "vintage retro", "gym fitness", "coffee shop mood",
+        "beach sunset", "rooftop city views", "garden botanical", "art gallery",
+        "spa wellness", "shopping spree", "brunch date", "poolside relaxation",
+    ]
+    random_theme_hint = random.choice(variation_themes)
+
     prompt = (
         "Based on the following Instagram strategy brief and profile analysis,\n"
         f"generate exactly {num_prompts} detailed image generation prompts for the w1man character (Lanna Danger).\n\n"
         "These prompts will form ONE carousel post for Instagram.\n\n"
+        f"VARIATION SEED: {variation_seed} (use this to inspire creative variation)\n"
+        f"THEME HINT: Consider incorporating '{random_theme_hint}' vibes into this carousel.\n\n"
         "=== CAROUSEL STRUCTURE RULES (CRITICAL) ===\n"
         "Look at the Scout analysis individual_analyses - these are the REFERENCE slides.\n"
         "Your carousel MUST mirror the reference carousel's structure:\n\n"
@@ -250,22 +316,36 @@ def main():
         "   Prompt 1 mirrors reference slide 1, prompt 2 mirrors slide 2, etc.\n\n"
         "3. Adapt the content for our character (w1man/Lanna Danger) but keep the\n"
         "   same structural pattern (location changes, outfit changes, pose flow).\n\n"
-        "Follow the block template EXACTLY for each prompt:\n"
+        "=== CAROUSEL CONTENT MIX (CRITICAL) ===\n"
+        "The carousel MUST mix content types like real Instagram posts:\n"
+        f"- Out of {num_prompts} slides, at least 1 MUST be a product/object photo (generator=nano_banana)\n"
+        "- Product photos: cosmetics, accessories, drinks, objects related to the scene\n"
+        "- Character photos (generator=z_image): use the block template below\n"
+        "- Example for 4 slides: z_image, z_image, nano_banana, z_image\n\n"
+        "Follow the block template EXACTLY for Z-Image character prompts:\n"
         "  A w1man, [setting]\n"
         "  Background: [bg details with blur]\n"
         "  [appearance: hair, face, expression, makeup]\n"
         "  Outfit ([name]): [detailed clothing description]\n"
         "  [camera position, framing, lighting]\n\n"
+        "For Nano Banana product prompts:\n"
+        "  Professional product photography of [product], shot with [camera], [lighting], [composition]\n\n"
         "Each prompt should be 150-400 words.\n\n"
         "=== DIRECTOR BRIEF ===\n"
         f"{brief_text}\n\n"
         "=== SCOUT ANALYSIS (with individual slide analyses) ===\n"
         f"{analysis_text}\n\n"
         f"Generate exactly {num_prompts} prompts for ONE carousel.\n"
-        "Mirror the reference carousel's slide-by-slide structure.\n"
-        "For each prompt, note which reference slide it mirrors.\n"
+        "Mirror the reference carousel's slide-by-side structure.\n"
+        "For each prompt, specify generator (z_image or nano_banana).\n"
+        "At least 1 prompt MUST use generator=nano_banana.\n"
+        "AVOID mirrors, glass, and reflective surfaces in Z-Image backgrounds.\n"
         "Output ONLY the JSON object. No markdown."
     )
+
+    # Add dedup context
+    if previous_prompts_text:
+        prompt += previous_prompts_text
 
     # Inject learned patterns if available
     if memory_context:
@@ -292,7 +372,7 @@ def main():
                 {"role": "system", "content": CREATIVE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.7,
+            "temperature": 0.9,
             "max_tokens": 8000,
         },
         timeout=180,
@@ -320,9 +400,18 @@ def main():
     creative_output["username"] = username
     creative_output["character"] = "w1man"
 
+    # Only prepend "A w1man" to z_image prompts, NOT to nano_banana prompts
     for p in creative_output.get("prompts", []):
-        if not p.get("prompt", "").startswith("A w1man"):
+        generator = p.get("generator", "z_image")  # default to z_image for backwards compat
+        if generator == "z_image" and not p.get("prompt", "").startswith("A w1man"):
             p["prompt"] = "A w1man, " + p.get("prompt", "")
+        elif generator == "nano_banana":
+            # Ensure nano_banana prompts do NOT start with "A w1man"
+            prompt_text = p.get("prompt", "")
+            if prompt_text.startswith("A w1man, "):
+                p["prompt"] = prompt_text[len("A w1man, "):]
+            elif prompt_text.startswith("A w1man,"):
+                p["prompt"] = prompt_text[len("A w1man,"):].lstrip()
 
     creative_output["total_prompts"] = len(creative_output.get("prompts", []))
 

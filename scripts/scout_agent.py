@@ -82,11 +82,32 @@ def load_manifest(username):
         return json.load(f)
 
 
+def _load_parsed_posts_log(username):
+    """Load log of previously parsed image files to avoid duplicates."""
+    log_path = os.path.join(WORKSPACE, "scout_analysis", f"{username}_parsed_images.json")
+    if os.path.exists(log_path):
+        with open(log_path) as f:
+            return json.load(f)
+    return []
+
+
+def _save_parsed_posts_log(username, parsed_files):
+    """Save list of parsed image filenames for deduplication."""
+    log_dir = os.path.join(WORKSPACE, "scout_analysis")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"{username}_parsed_images.json")
+    with open(log_path, "w") as f:
+        json.dump(parsed_files, f, indent=2)
+
+
 def get_image_files(username, max_images=6):
     """Get list of image files for analysis (prefer slide1 and thumb images).
     
     Supports: photos (.jpg, .png), video thumbnails (_thumb.jpg),
     story screenshots, reel thumbnails.
+    
+    DEDUPLICATION: Skips images that were already analyzed in previous runs.
+    If all images were already parsed, resets the log and starts fresh.
     """
     img_dir = os.path.join(WORKSPACE, "downloads", username)
     all_files = sorted(
@@ -95,6 +116,17 @@ def get_image_files(username, max_images=6):
         list(Path(img_dir).glob("*.webp"))
     )
     image_files = [f for f in all_files if f.name not in ("manifest.json", "profile_pic.jpg")]
+
+    # Deduplication: skip already-parsed images
+    previously_parsed = set(_load_parsed_posts_log(username))
+    if previously_parsed:
+        new_files = [f for f in image_files if f.name not in previously_parsed]
+        if new_files:
+            print(f"[Scout] Dedup: {len(previously_parsed)} already parsed, {len(new_files)} new images available")
+            image_files = new_files
+        else:
+            print(f"[Scout] All {len(image_files)} images already parsed. Resetting dedup log for fresh analysis.")
+            _save_parsed_posts_log(username, [])  # reset
 
     priority = []
     others = []
@@ -105,6 +137,11 @@ def get_image_files(username, max_images=6):
             priority.append(f)  # prioritize story/reel content
         else:
             others.append(f)
+
+    # Shuffle within priority groups to get different posts each run
+    import random
+    random.shuffle(priority)
+    random.shuffle(others)
 
     selected = (priority + others)[:max_images]
     return selected
@@ -418,6 +455,13 @@ def main():
 
     with open(output_path, "w") as f:
         json.dump(analysis, f, indent=2, ensure_ascii=False)
+
+    # Update dedup log with newly parsed images
+    previously_parsed = _load_parsed_posts_log(username)
+    newly_parsed = [f.name for f in image_files]
+    all_parsed = list(set(previously_parsed + newly_parsed))
+    _save_parsed_posts_log(username, all_parsed)
+    print("[Scout] Dedup log updated: %d total parsed images" % len(all_parsed))
 
     print("[Scout] Analysis saved: " + output_path)
     summary = analysis.get("profile_summary", analysis.get("visual_style", "N/A"))

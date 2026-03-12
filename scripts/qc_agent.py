@@ -29,7 +29,7 @@ RUNPOD_BASE_URL = "https://api.runpod.ai/v2/" + RUNPOD_ENDPOINT
 QC_SYSTEM_PROMPT = """You are QC - a strict AI quality control agent for AI-generated Instagram images.
 You receive a generated image and the prompt that was used to create it.
 
-Your job is to evaluate the image on these 5 criteria. Be STRICT and look carefully:
+Your job is to evaluate the image on these 6 criteria. Be STRICT and look carefully:
 
 1. Prompt adherence (0-10): Does the image match the described scene, outfit, setting, pose, camera angle?
 2. Character consistency (0-10): Does the character look natural? Correct hair, face, body proportions? No uncanny valley?
@@ -44,15 +44,34 @@ Your job is to evaluate the image on these 5 criteria. Be STRICT and look carefu
    If ANY of the above are present, max score for this criterion is 5.
 4. Composition (0-10): Good framing for vertical Instagram? Subject centered? Background appropriate?
 5. Content safety (0-10): No nudity, no inappropriate content, Instagram-safe?
+6. Mirror/Reflection quality (0-10): CRITICAL CHECK - inspect EVERY reflective surface:
+   - Mirrors: does the reflection match the person EXACTLY? Same pose, same clothing, same hair?
+   - Windows/glass: are there ghost reflections or duplicated elements?
+   - Shiny surfaces: do reflections on tables/floors look physically correct?
+   - Studio equipment: are there visible softboxes, ring lights, light stands in the background?
+   - Reflective objects: sunglasses, jewelry, screens - do they show impossible reflections?
+   - Hair in reflections: braids, ponytails, hair length MUST match between person and reflection
+   - Extra body parts in reflections: if reflection shows 3 arms or extra fingers = score 0
+   - If NO reflective surfaces are present, score 10 (not applicable)
+   - If ANY reflection artifact is found, max score for this criterion is 3
 
 IMPORTANT ARTIFACT CHECKS (look at these BEFORE scoring):
-- Count the number of arms visible. If more than 2 arms -> FAIL technical quality
-- Count the number of hands visible. If more than 2 hands -> FAIL technical quality
+- Count the number of arms visible (including in reflections). If more than 2 arms -> FAIL technical quality
+- Count the number of hands visible (including in reflections). If more than 2 hands -> FAIL technical quality
 - Count fingers on each visible hand. If any hand has more/fewer than 5 fingers -> reduce score
-- If there is a mirror/reflection, check that the reflection matches the actual person (same pose, same clothing, correct mirror physics)
-- Check hair consistency: no hair appearing/disappearing between main image and reflection
+- MIRROR/REFLECTION DEEP CHECK (CRITICAL):
+  * If there is a mirror/reflection, compare the person and their reflection side by side
+  * Check that the reflection matches the actual person (same pose, same clothing, correct mirror physics)
+  * Check hair consistency: no hair appearing/disappearing between main image and reflection
+  * Check that studio equipment (softboxes, light stands, cameras) is NOT visible in background or reflections
+  * Check that no extra limbs appear ONLY in the reflection but not on the person
+  * Check window reflections for ghost images or duplicated body parts
+  * If background contains ANY mirror, glass, or reflective surface — examine it pixel by pixel
+- Background consistency: does the background match the prompt description? No unexpected objects?
 
-Calculate OVERALL score = average of all 5 criteria.
+Calculate OVERALL score = weighted average:
+  - technical_quality * 0.25 + mirror_reflection * 0.20 + prompt_adherence * 0.20
+  - character_consistency * 0.15 + composition * 0.10 + content_safety * 0.10
 
 Output ONLY a valid JSON object:
 {
@@ -62,6 +81,7 @@ Output ONLY a valid JSON object:
     "technical_quality": 0,
     "composition": 0,
     "content_safety": 0,
+    "mirror_reflection": 0,
     "overall": 0.0
   },
   "pass": true,
@@ -69,15 +89,20 @@ Output ONLY a valid JSON object:
     "arms_count": 2,
     "hands_count": 2,
     "finger_issues": false,
+    "mirror_present": false,
     "mirror_consistent": true,
-    "extra_limbs": false
+    "reflection_artifacts": [],
+    "studio_equipment_visible": false,
+    "extra_limbs": false,
+    "background_matches_prompt": true
   },
   "issues": ["issue1 if any"],
   "notes": "brief assessment"
 }
 
 IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences.
-Be STRICT. It is better to fail a good image than to pass a bad one."""
+Be STRICT. It is better to fail a good image than to pass a bad one.
+Pay EXTRA attention to mirrors, reflections, and any reflective surfaces."""
 
 
 def parse_json_response(text):
