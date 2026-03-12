@@ -1,14 +1,15 @@
 #!/bin/bash
-# SCAIL Motion Control Worker - Entrypoint v3
+# SCAIL Motion Control Worker - Entrypoint v3.1 (hybrid)
 #
 # KEY DESIGN:
-#   1. ALL custom nodes installed BEFORE ComfyUI starts (nodes scanned at startup only)
-#   2. Critical pip packages upgraded BEFORE ComfyUI starts
-#   3. /start.sh launched AFTER nodes ready -> ComfyUI finds all nodes on first scan
-#   4. Model downloads run in FOREGROUND after /start.sh (keeps container alive)
-#   5. Models are loaded on-demand by ComfyUI when jobs arrive
+#   Phase 1: Quick setup (<30s) - symlink cached nodes+models, patch handler
+#   Phase 2: Start /start.sh immediately -> worker becomes 'ready' fast
+#   Phase 3: Wait for ComfyUI, install new nodes + pip upgrades
+#   Phase 4: Restart ONLY ComfyUI (not handler) to rescan nodes
+#   Phase 5: Download models in foreground (keeps container alive)
+#   Phase 6: Wait on worker process
 #
-# On subsequent boots with cached volume: nodes verified in <60s, instant start
+# On subsequent boots with cached volume: nodes symlinked in <10s, instant start
 
 VOLUME_ROOT="/runpod-volume"
 VOLUME_MODELS="$VOLUME_ROOT/models"
@@ -17,22 +18,43 @@ COMFYUI_MODELS="/comfyui/models"
 COMFYUI_NODES="/comfyui/custom_nodes"
 COMFYUI_DIR="/comfyui"
 
-echo "[entrypoint] === SCAIL Motion Control Worker v3 Starting ==="
+echo "[entrypoint] === SCAIL Motion Control Worker v3.1 Starting ==="
 echo "[entrypoint] Date: $(date -u)"
 
 # ============================================================
-# PHASE 1: Install custom nodes BEFORE ComfyUI starts
-# ComfyUI only scans for nodes at startup, so they must exist first
+# PHASE 1: Quick setup (<30s) - symlink cached nodes + models
 # ============================================================
 
-# 1a. Install aria2 if not present (needed for model downloads later)
-if ! command -v aria2c &>/dev/null; then
-    echo "[setup] Installing aria2..."
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
+mkdir -p "$COMFYUI_NODES" "$VOLUME_NODES"
+
+# 1a. Symlink cached custom nodes from volume (instant)
+NODES_LINKED=0
+if [ -d "$VOLUME_NODES" ]; then
+    for node_dir in "$VOLUME_NODES"/*/; do
+        [ -d "$node_dir" ] || continue
+        dirname=$(basename "$node_dir")
+        ln -sf "$node_dir" "$COMFYUI_NODES/$dirname"
+        NODES_LINKED=$((NODES_LINKED + 1))
+    done
+    echo "[entrypoint] Linked $NODES_LINKED cached custom nodes from volume"
+else
+    echo "[entrypoint] No cached custom nodes on volume (first boot)"
 fi
 
-# 1b. Prepare directories
-mkdir -p "$COMFYUI_NODES" "$VOLUME_NODES"
+# 1b. Symlink cached models from volume (instant)
+if [ -d "$VOLUME_MODELS" ]; then
+    for vol_dir in "$VOLUME_MODELS"/*/; do
+        [ -d "$vol_dir" ] || continue
+        dirname=$(basename "$vol_dir")
+        target_dir="$COMFYUI_MODELS/$dirname"
+        mkdir -p "$target_dir"
+        for item in "$vol_dir"*; do
+            [ -e "$item" ] || continue
+            ln -sf "$item" "$target_dir/$(basename "$item")"
+        done
+    done
+    echo "[entrypoint] Model symlinks created"
+fi
 
 # 1c. Patch handler.py for video output (VHS_VideoCombine uses 'gifs' key)
 if ! grep -q 'gifs' /handler.py 2>/dev/null; then
@@ -56,9 +78,33 @@ else:
 ' 2>&1 || true
 fi
 
-echo "[setup] Phase 1a complete - handler patched. ($(date -u))"
+echo "[entrypoint] Phase 1 complete ($(date -u))."
 
-# 1d. Install/verify custom nodes on volume
+# ============================================================
+# PHASE 2: Start worker in BACKGROUND
+# Worker becomes 'ready' immediately while we continue setup
+# ============================================================
+echo "[entrypoint] Starting /start.sh in background..."
+/start.sh &
+WORKER_PID=$!
+echo "[entrypoint] Worker PID: $WORKER_PID"
+
+# Wait for ComfyUI to fully start and import all libraries
+# CRITICAL: pip install while ComfyUI imports causes ImportError race conditions
+echo "[entrypoint] Waiting 45s for ComfyUI to finish importing..."
+sleep 45
+echo "[entrypoint] ComfyUI should be loaded. Starting heavy setup..."
+
+# ============================================================
+# PHASE 3: Install/verify custom nodes + upgrade packages
+# ============================================================
+
+# 3a. Install aria2 if not present
+if ! command -v aria2c &>/dev/null; then
+    echo "[setup] Installing aria2..."
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends aria2 && rm -rf /var/lib/apt/lists/*
+fi
+
 NEW_NODES_INSTALLED=0
 
 install_node() {
@@ -120,41 +166,36 @@ python3 -c "import onnxruntime" 2>/dev/null || {
 
 echo "[setup] Custom nodes done. New installs: $NEW_NODES_INSTALLED"
 
-# 1e. Upgrade critical packages for flux2/qwen3 support (BEFORE ComfyUI starts)
+# 3c. Upgrade critical packages for flux2/qwen3 support
 echo "[setup] Upgrading critical packages..."
 pip install --upgrade safetensors transformers tokenizers 2>&1 | tail -5 || true
 
-# 1f. Symlink cached models from volume (instant - models loaded on-demand)
-if [ -d "$VOLUME_MODELS" ]; then
-    for vol_dir in "$VOLUME_MODELS"/*/; do
-        [ -d "$vol_dir" ] || continue
-        dirname=$(basename "$vol_dir")
-        target_dir="$COMFYUI_MODELS/$dirname"
-        mkdir -p "$target_dir"
-        for item in "$vol_dir"*; do
-            [ -e "$item" ] || continue
-            ln -sf "$item" "$target_dir/$(basename "$item")"
-        done
-    done
-    echo "[setup] Model symlinks created"
+# ============================================================
+# PHASE 4: Restart ComfyUI to pick up newly installed nodes
+# The handler stays running (only ComfyUI process is restarted)
+# ============================================================
+if [ $NEW_NODES_INSTALLED -gt 0 ] || [ $NODES_LINKED -eq 0 ]; then
+    echo "[setup] Restarting ComfyUI to pick up new nodes + upgraded packages..."
+    sleep 3
+    # Kill ComfyUI process (NOT the handler)
+    pkill -f "python.*main.py.*--disable-auto-launch" 2>/dev/null || true
+    sleep 5
+    # Restart ComfyUI manually (base image /start.sh doesn't auto-restart it)
+    echo "[setup] Starting ComfyUI with freshly installed nodes..."
+    : "${COMFY_LOG_LEVEL:=DEBUG}"
+    python -u /comfyui/main.py --disable-auto-launch --disable-metadata --verbose "${COMFY_LOG_LEVEL}" --log-stdout &
+    echo "[setup] ComfyUI restarted. Waiting 30s for node scan..."
+    sleep 30
+else
+    echo "[setup] All nodes were cached. No ComfyUI restart needed."
 fi
 
-echo "[setup] Phase 1 complete - all nodes installed. ($(date -u))"
-
 # ============================================================
-# PHASE 2: Start worker (nodes are ready, ComfyUI will find them)
-# ============================================================
-echo "[entrypoint] Starting /start.sh in background..."
-/start.sh &
-WORKER_PID=$!
-echo "[entrypoint] Worker PID: $WORKER_PID (ComfyUI will scan nodes on startup)"
-
-# ============================================================
-# PHASE 3: Download models in FOREGROUND (keeps container alive)
+# PHASE 5: Download models in FOREGROUND (keeps container alive)
 # Models are loaded on-demand when jobs arrive
 # ============================================================
 
-# 3a. Integrity check on qwen safetensors file
+# 5a. Integrity check on qwen safetensors file
 QWEN_FILE="$VOLUME_MODELS/text_encoders/qwen_3_8b_fp8mixed.safetensors"
 if [ -f "$QWEN_FILE" ]; then
     echo "[setup] Checking qwen file integrity..."
@@ -200,7 +241,7 @@ except Exception as e:
 ' 2>&1 || true
 fi
 
-# 3b. Download models
+# 5b. Download models
 DOWNLOAD_ERRORS=0
 
 validate_safetensors() {
@@ -329,7 +370,7 @@ if [ $DOWNLOAD_ERRORS -gt 0 ]; then
     echo "[setup] WARNING: $DOWNLOAD_ERRORS download(s) failed."
 fi
 
-# 3c. Sync symlinks again (for newly downloaded models)
+# 5c. Sync symlinks again (for newly downloaded models)
 if [ -d "$VOLUME_MODELS" ]; then
     echo "[setup] Refreshing model symlinks..."
     for vol_dir in "$VOLUME_MODELS"/*/; do
@@ -348,6 +389,6 @@ echo "[setup] === Setup complete at $(date -u) ==="
 echo "[setup] Worker is running (PID $WORKER_PID). Ready to process jobs."
 
 # ============================================================
-# PHASE 4: Wait for worker process (keeps container alive)
+# PHASE 6: Wait for worker process (keeps container alive)
 # ============================================================
 wait $WORKER_PID
