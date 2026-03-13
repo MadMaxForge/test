@@ -61,10 +61,18 @@ class MCConductor:
         from state_manager import StateManager
         from asset_router import AssetRouter
         from reference_queue import ReferenceQueue
+        from package_planner import PackagePlanner
+        from package_creative import PackageCreative
+        from package_publish import PackagePublish
+        from telegram_manager import TelegramManager
 
         self.state_manager = StateManager()
         self.router = AssetRouter()
         self.ref_queue = ReferenceQueue()
+        self.planner = PackagePlanner()
+        self.creative = PackageCreative()
+        self.publisher = PackagePublish()
+        self.telegram = TelegramManager()
         self.bot = None
         self._processed_callbacks = set()  # Idempotency: track processed callback IDs
 
@@ -340,20 +348,10 @@ class MCConductor:
             "Package rejected. All assets archived. Send /next to create a new package.")
 
     async def _show_regen_options(self, query, package_id):
-        """Show buttons for each asset that can be regenerated."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
+        """Show per-asset regeneration buttons — delegates to TelegramManager."""
         state = self.state_manager.get_package(package_id)
-        buttons = []
-
-        for asset in state["assets"]:
-            label = "%s (%s)" % (asset["asset_id"], asset["type"])
-            callback = "regen_asset_%s___%s" % (package_id, asset["asset_id"])
-            buttons.append([InlineKeyboardButton(label, callback_data=callback)])
-
-        keyboard = InlineKeyboardMarkup(buttons)
-        await query.edit_message_text(
-            "Which asset to regenerate?", reply_markup=keyboard)
+        await query.edit_message_text("Loading regeneration options...")
+        await self.telegram.send_regen_options(package_id, state["assets"])
 
     async def _handle_regen_asset(self, query, callback_data):
         """Regenerate a specific asset."""
@@ -630,191 +628,42 @@ class MCConductor:
 
     async def _run_planner(self, package_id, scout_result, reel_ref=None):
         """
-        Run Package Planner — decides asset composition.
-
-        Takes Scout analysis and decides:
-        - How many post slides, stories, reel
-        - Character vs world per asset
-        - Generator routing
+        Run Package Planner — delegates to PackagePlanner module.
+        Registers planned assets in state_manager.
 
         Returns: dict — package plan
         """
-        pkg_dir = self.state_manager.get_package_dir(package_id)
         plan_dir = self.state_manager.get_package_subdir(package_id, "plan")
         state = self.state_manager.get_package(package_id)
-
-        # Analyze scout output to determine composition
-        slides = scout_result.get("individual_analyses",
-                                  scout_result.get("slides", []))
-        slide_count = len(slides)
-
-        # Determine post count (mirror reference structure, cap at 4)
-        post_count = min(slide_count, 4) if slide_count > 0 else 3
-
-        # Stories: 1-2 as supplement
-        story_count = min(2, 4 - post_count) if post_count <= 3 else 1
-
-        # Reel: only if we have a reel reference
         has_reel = reel_ref is not None
 
-        # Get suggested character/world mix
-        mix = self.router.suggest_mix(post_count, story_count, has_reel)
+        # Delegate to PackagePlanner
+        plan = self.planner.create_plan(
+            package_id, state["theme"], scout_result,
+            has_reel=has_reel)
 
-        # Build plan
-        plan = {
-            "plan_id": "plan_%s" % package_id,
-            "package_id": package_id,
-            "theme": state["theme"],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "based_on_reference": scout_result.get("reference_id", "unknown"),
-            "assets": [],
-            "summary": {},
-        }
-
-        asset_order = 0
-
-        # Add post slides
-        char_remaining = mix["posts"]["character"]
-        for i in range(1, post_count + 1):
-            has_char = char_remaining > 0
-            if has_char:
-                char_remaining -= 1
-
-            generator = self.router.route(has_char, "post_slide")
-            role = "hero_character" if has_char and i == 1 else (
-                "character_scene" if has_char else "world_detail")
-
-            # Get brief from scout slide if available
-            brief = ""
-            if i - 1 < len(slides):
-                slide = slides[i - 1]
-                if isinstance(slide, dict):
-                    brief = "%s, %s" % (
-                        slide.get("background", ""),
-                        slide.get("mood", slide.get("subject", "")))
-
-            asset_id = "post_slide_%d" % i
-            plan["assets"].append({
-                "asset_id": asset_id,
-                "type": "post_slide",
-                "order": i,
-                "role": role,
-                "has_character": has_char,
-                "generator": generator,
-                "brief": brief[:200] if brief else "Post slide %d" % i,
-                "mirrors_reference_slide": i if i <= len(slides) else None,
-            })
-
-            # Add to state
+        # Register each planned asset in state_manager
+        for asset in plan.get("assets", []):
             self.state_manager.add_asset(
-                package_id, asset_id, "post_slide", i,
-                role, has_char, generator)
+                package_id, asset["asset_id"], asset["type"],
+                asset["order"], asset.get("role", ""),
+                asset["has_character"], asset["generator"],
+                motion_ref=asset.get("motion_ref"))
 
-        # Add story frames
-        story_char_remaining = mix["stories"]["character"]
-        for i in range(1, story_count + 1):
-            has_char = story_char_remaining > 0
-            if has_char:
-                story_char_remaining -= 1
-
-            generator = self.router.route(has_char, "story_frame")
-            role = "behind_the_scenes" if has_char else "lifestyle_detail"
-
-            asset_id = "story_frame_%d" % i
-            plan["assets"].append({
-                "asset_id": asset_id,
-                "type": "story_frame",
-                "order": i,
-                "role": role,
-                "has_character": has_char,
-                "generator": generator,
-                "brief": "Story frame %d" % i,
-                "mirrors_reference_slide": None,
-            })
-
-            self.state_manager.add_asset(
-                package_id, asset_id, "story_frame", i,
-                role, has_char, generator)
-
-        # Add reel if we have motion reference
-        if has_reel:
-            asset_id = "reel_1"
-            motion_ref_path = None
-
-            # Download reel video reference
-            if reel_ref:
-                ref_dir = self.state_manager.get_package_subdir(package_id, "references")
-                try:
-                    from instagram_scraper import download_post_by_url
-                    reel_files = download_post_by_url(reel_ref["url"], ref_dir)
-                    for f in reel_files:
-                        if f.endswith(".mp4"):
-                            motion_ref_path = f
-                            break
-                except Exception as e:
-                    print("[MC/Planner] Could not download reel reference: %s" % e)
-
-            plan["assets"].append({
-                "asset_id": asset_id,
-                "type": "reel_start_frame",
-                "order": 1,
-                "role": "motion_content",
-                "has_character": True,
-                "generator": "z_image",
-                "brief": "Reel start frame for motion",
-                "motion_ref": motion_ref_path,
-                "mirrors_reference_slide": None,
-            })
-
-            self.state_manager.add_asset(
-                package_id, asset_id, "reel_start_frame", 1,
-                "motion_content", True, "z_image",
-                motion_ref=motion_ref_path)
-
-        # Build summary
-        total = len(plan["assets"])
-        char_count = sum(1 for a in plan["assets"] if a["has_character"])
-        world_count = total - char_count
-
-        plan["summary"] = {
-            "total_assets": total,
-            "post_slides": post_count,
-            "story_frames": story_count,
-            "reel_start_frames": 1 if has_reel else 0,
-            "character_assets": char_count,
-            "world_assets": world_count,
-            "character_ratio": round(char_count / total, 2) if total > 0 else 0,
-        }
-
-        # Validate routing
-        is_valid, errors, warnings = self.router.validate_plan(plan["assets"])
-        if not is_valid:
-            print("[MC/Planner] WARNING: Plan validation errors: %s" % errors)
-        for w in warnings:
-            print("[MC/Planner] Warning: %s" % w)
-
-        plan["character_world_policy"] = (
-            "%d character + %d world = %d/%d ratio" % (
-                char_count, world_count,
-                round(char_count / total * 100) if total > 0 else 0,
-                round(world_count / total * 100) if total > 0 else 0))
-
-        # Save plan
+        # Save plan file
         plan_path = os.path.join(plan_dir, "package_plan.json")
         with open(plan_path, "w") as f:
             json.dump(plan, f, indent=2, ensure_ascii=False)
 
-        print("[MC/Planner] Plan saved: %d assets (%s)" % (
-            total, plan["character_world_policy"]))
+        print("[MC/Planner] Plan saved: %d assets" % len(plan.get("assets", [])))
         return plan
 
     async def _run_creative(self, package_id, plan):
         """
-        Run Creative agent — generate prompts for all planned assets.
+        Run Creative agent — delegates to PackageCreative module.
 
         Returns: dict — creative prompts output
         """
-        pkg_dir = self.state_manager.get_package_dir(package_id)
         prompts_dir = self.state_manager.get_package_subdir(package_id, "prompts")
         analysis_dir = self.state_manager.get_package_subdir(package_id, "analysis")
 
@@ -825,36 +674,8 @@ class MCConductor:
             with open(analysis_path) as f:
                 scout_data = json.load(f)
 
-        state = self.state_manager.get_package(package_id)
-        theme = state["theme"]
-
-        # Build creative prompt for LLM
-        creative_system = self._build_creative_system_prompt()
-        creative_user = self._build_creative_user_prompt(theme, plan, scout_data)
-
-        # Call LLM
-        result = await self._call_openrouter_text(
-            creative_user,
-            system_prompt=creative_system,
-            model="moonshotai/kimi-k2.5",
-        )
-
-        if not result or "prompts" not in result:
-            print("[MC/Creative] LLM returned unexpected format, building fallback")
-            result = self._build_fallback_prompts(plan, theme)
-
-        # Add metadata
-        import hashlib
-        result["creative_id"] = "creative_%s" % package_id
-        result["package_id"] = package_id
-        result["theme"] = theme
-        result["created_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Add prompt hashes
-        for prompt_item in result.get("prompts", []):
-            prompt_text = prompt_item.get("prompt", "")
-            prompt_item["prompt_hash"] = hashlib.md5(
-                prompt_text.encode()).hexdigest()[:8]
+        # Delegate to PackageCreative
+        result = self.creative.generate_prompts(package_id, plan, scout_data)
 
         # Update asset statuses to prompt_ready
         for prompt_item in result.get("prompts", []):
@@ -942,60 +763,24 @@ class MCConductor:
 
     async def _run_publish(self, package_id):
         """
-        Run Publish agent — generate captions, hashtags, story text.
+        Run Publish agent — delegates to PackagePublish module.
         Sends text preview to Telegram for approval.
         """
         state = self.state_manager.get_package(package_id)
         theme = state["theme"]
 
-        # Build publish prompt
-        publish_system = (
-            "You are Publish Agent for an Instagram influencer. "
-            "Generate engaging text content for a package themed '%s'.\n\n"
-            "Rules:\n"
-            "- Caption: 2-4 sentences, conversational, ends with question or CTA\n"
-            "- Exactly 5 hashtags, relevant to theme\n"
-            "- Story overlay text: very short (2-4 words max)\n"
-            "- Reel caption: 1 short sentence\n"
-            "- Caption length: 100-150 characters\n"
-            "- NO emojis in caption\n\n"
-            "Output ONLY valid JSON." % theme
-        )
+        # Load plan summary if available
+        plan_dir = self.state_manager.get_package_subdir(package_id, "plan")
+        plan_path = os.path.join(plan_dir, "package_plan.json")
+        plan_summary = None
+        if os.path.exists(plan_path):
+            with open(plan_path) as f:
+                plan_data = json.load(f)
+            plan_summary = plan_data.get("summary")
 
-        # Describe assets for context
-        asset_desc = []
-        for asset in state["assets"]:
-            asset_desc.append("%s (%s, %s)" % (
-                asset["asset_id"], asset["type"],
-                "character" if asset["has_character"] else "world"))
-
-        publish_user = (
-            "Package theme: %s\n"
-            "Assets: %s\n\n"
-            "Generate JSON with this structure:\n"
-            "{\n"
-            '  "post": {"caption": "...", "hashtags": ["#tag1",...5 tags], "caption_length": N},\n'
-            '  "stories": [{"asset_id": "story_frame_1", "text_overlay": "short text or null"}],\n'
-            '  "reel": {"asset_id": "reel_1", "caption": "short", "hashtags": ["#tag1",...3 tags]} or null\n'
-            "}" % (theme, ", ".join(asset_desc))
-        )
-
-        result = await self._call_openrouter_text(
-            publish_user,
-            system_prompt=publish_system,
-            model="google/gemini-2.0-flash-lite-001",
-        )
-
-        if not result:
-            result = {
-                "post": {
-                    "caption": "Living the %s life." % theme,
-                    "hashtags": ["#lifestyle", "#mood", "#vibes", "#inspo", "#content"],
-                    "caption_length": 30,
-                },
-                "stories": [],
-                "reel": None,
-            }
+        # Delegate to PackagePublish
+        result = self.publisher.generate_text(
+            package_id, theme, state["assets"], plan_summary)
 
         # Update state with text
         post_data = result.get("post", {})
@@ -1013,8 +798,8 @@ class MCConductor:
         with open(os.path.join(text_dir, "publish_output.json"), "w") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        # Send text preview to Telegram
-        await self._send_text_preview(package_id, result)
+        # Send text preview to Telegram via TelegramManager
+        await self.telegram.send_text_preview(package_id, result)
 
     async def _run_kling_motion(self, package_id, reel_asset):
         """Run Kling motion generation for an approved reel start frame."""
@@ -1137,119 +922,20 @@ class MCConductor:
     # ── Preview Sending ──────────────────────────────────────────
 
     async def _send_package_preview(self, package_id):
-        """Send all generated assets as a preview to Telegram."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
+        """Send all generated assets as a preview — delegates to TelegramManager."""
         state = self.state_manager.get_package(package_id)
         pkg_dir = self.state_manager.get_package_dir(package_id)
 
-        await self._init_bot()
-
-        message_ids = []
-
-        # Send header
-        summary = self.state_manager.get_asset_summary(package_id)
-        header = (
-            "Package Preview: %s\n"
-            "Theme: %s\n"
-            "Assets: %d (%d character, %d world)\n"
-            "─────────────────" % (
-                package_id[:35], state["theme"],
-                summary["total"],
-                summary["character_count"],
-                summary["world_count"]))
-
-        msg = await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=header)
-        message_ids.append(msg.message_id)
-
-        # Send each asset
-        for asset in sorted(state["assets"], key=lambda a: (a["type"], a["order"])):
-            active_ver = asset["active_version"]
-            if active_ver <= 0 or not asset["versions"]:
-                continue
-
-            file_rel = asset["versions"][active_ver - 1]["file"]
-            file_path = os.path.join(pkg_dir, file_rel)
-
-            if not os.path.exists(file_path):
-                continue
-
-            caption = "%s | %s | %s" % (
-                asset["asset_id"],
-                "character" if asset["has_character"] else "world",
-                asset["generator"])
-
-            try:
-                with open(file_path, "rb") as photo:
-                    msg = await self.bot.send_photo(
-                        chat_id=TELEGRAM_CHAT_ID, photo=photo, caption=caption)
-                    message_ids.append(msg.message_id)
-            except Exception as e:
-                print("[MC/Preview] Error sending %s: %s" % (asset["asset_id"], e))
-
-        # Send action buttons
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "Approve All", callback_data="pkg_approve_%s" % package_id),
-                InlineKeyboardButton(
-                    "Reject All", callback_data="pkg_reject_%s" % package_id),
-            ],
-            [
-                InlineKeyboardButton(
-                    "Regenerate...", callback_data="pkg_regen_%s" % package_id),
-            ],
-        ])
-
-        msg = await self.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text="Choose action for this package:",
-            reply_markup=keyboard)
-        message_ids.append(msg.message_id)
+        message_ids = await self.telegram.send_package_preview(
+            package_id, state, pkg_dir)
 
         # Save preview message IDs for cleanup
         self.state_manager.update_review_context(
             package_id, last_preview_message_ids=message_ids)
 
     async def _send_text_preview(self, package_id, publish_data):
-        """Send text preview to Telegram for approval."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        await self._init_bot()
-
-        post = publish_data.get("post", {})
-        caption = post.get("caption", "N/A")
-        hashtags = post.get("hashtags", [])
-        stories = publish_data.get("stories", [])
-
-        text = (
-            "Text Preview for package:\n\n"
-            "Caption:\n%s\n\n"
-            "Hashtags: %s\n" % (caption, " ".join(hashtags))
-        )
-
-        if stories:
-            text += "\nStory overlays:\n"
-            for s in stories:
-                text += "• %s: %s\n" % (
-                    s.get("asset_id", "?"),
-                    s.get("text_overlay", "none"))
-
-        reel = publish_data.get("reel")
-        if reel:
-            text += "\nReel caption: %s\n" % reel.get("caption", "N/A")
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "Approve Text", callback_data="txt_approve_%s" % package_id),
-                InlineKeyboardButton(
-                    "Reject Text", callback_data="txt_reject_%s" % package_id),
-            ],
-        ])
-
-        await self.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID, text=text, reply_markup=keyboard)
+        """Send text preview — delegates to TelegramManager."""
+        await self.telegram.send_text_preview(package_id, publish_data)
 
     # ── Generator Wrappers ───────────────────────────────────────
 
