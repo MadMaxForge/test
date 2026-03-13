@@ -318,9 +318,12 @@ def test_endpoint():
         print("[Test] On laptop: ssh -R 8001:localhost:8001 -p 2222 root@<VPS_IP>")
         return False
 
+    # NOTE: w1man LoRA requires explicit female descriptors in the prompt
+    # (e.g. "She", "wearing a dress", "young woman") — otherwise it may
+    # generate a male character. All production prompts must include these.
     test_prompt = (
-        "A w1man, standing in a sunlit modern apartment, "
-        "wearing a casual white t-shirt and jeans, natural lighting from large windows, "
+        "A w1man, young woman standing in a sunlit modern apartment, "
+        "she is wearing a casual white t-shirt and jeans, natural lighting from large windows, "
         "soft shadows, relaxed pose leaning against a kitchen counter, "
         "warm golden hour light, photorealistic, high detail, 8k quality"
     )
