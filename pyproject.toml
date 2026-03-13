@@ -1,20 +1,15 @@
 [tool.poetry]
-name = "app"
-version = "0.1.0"
-description = ""
+name = "content-module"
+version = "0.2.0"
+description = "Modular Instagram content creation system for AI character"
 authors = ["Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.12"
-fastapi = {extras = ["standard"], version = "^0.135.1"}
-psycopg = {extras = ["binary"], version = "^3.3.3"}
-httpx = "^0.28.1"
-python-dotenv = "^1.2.2"
-boto3 = "^1.42.62"
-python-multipart = "^0.0.22"
-aiofiles = "^25.1.0"
-uuid6 = "^2025.0.1"
+python = "^3.11"
+python-telegram-bot = "^20.7"
+requests = "^2.31"
+instagrapi = "^2.1"
 
 
 [build-system]
