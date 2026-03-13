@@ -818,11 +818,11 @@ class MCConductor:
         print("[MC/Kling] Motion reference: %s" % motion_ref)
 
         try:
-            from kling_motion_control import generate_kling_motion
-            result = generate_kling_motion(frame_path, motion_ref)
+            from kling_motion_control import motion_control
+            video_bytes, video_url = motion_control(motion_ref, frame_path)
 
-            if result and result.get("output_path"):
-                reel_output = result["output_path"]
+            if video_url:
+                reel_output = video_url
                 self.state_manager.update_reel_stage(
                     package_id, reel_asset["asset_id"], "motion_review")
 
@@ -1094,87 +1094,6 @@ class MCConductor:
                 ", ".join(f.name for f in image_files))
         )
 
-    def _build_creative_system_prompt(self):
-        """Build system prompt for Creative agent."""
-        return (
-            "You are Creative Agent for an Instagram AI content pipeline.\n\n"
-            "You receive a package plan with assets and must write detailed generation prompts.\n\n"
-            "RULES:\n"
-            "- Z-Image prompts: Start with 'A w1man, ', detailed (background, hair, face, outfit, camera)\n"
-            "- Nano Banana prompts: 100-150 chars, NO person references, include 'real photo'\n"
-            "- Reel start frames: Z-Image prompt, clean background for motion transfer\n"
-            "- Feed resolution: 1080x1350 (4:5)\n"
-            "- Story/Reel resolution: 1088x1920 (9:16)\n"
-            "- NEVER mention mirrors, glass reflections, or reflective surfaces\n"
-            "- Each prompt must be unique — no copy-paste between assets\n"
-            "- Maintain theme consistency across all prompts\n\n"
-            "Output ONLY valid JSON with 'prompts' array.\n"
-            "Each prompt: {asset_id, type, generator, content_format, resolution, prompt, mood, camera_framing}"
-        )
-
-    def _build_creative_user_prompt(self, theme, plan, scout_data):
-        """Build user prompt for Creative agent."""
-        lines = ["Package theme: %s\n" % theme]
-        lines.append("Planned assets:\n")
-
-        for asset in plan.get("assets", []):
-            lines.append("- %s: type=%s, generator=%s, role=%s, character=%s" % (
-                asset["asset_id"], asset["type"], asset["generator"],
-                asset["role"], asset["has_character"]))
-            if asset.get("brief"):
-                lines.append("  Brief: %s" % asset["brief"])
-
-        # Add scout context if available
-        slides = scout_data.get("individual_analyses",
-                                scout_data.get("slides", []))
-        if slides:
-            lines.append("\nReference analysis (for inspiration, not copy):")
-            for i, slide in enumerate(slides[:4]):
-                if isinstance(slide, dict):
-                    lines.append("  Ref %d: bg=%s, mood=%s, clothing=%s" % (
-                        i + 1,
-                        slide.get("background", "?")[:80],
-                        slide.get("mood", "?")[:40],
-                        slide.get("clothing", "?")[:60]))
-
-        lines.append("\nGenerate prompts JSON. Each asset needs exactly one prompt.")
-        return "\n".join(lines)
-
-    def _build_fallback_prompts(self, plan, theme):
-        """Build fallback prompts if LLM fails."""
-        prompts = []
-        for asset in plan.get("assets", []):
-            generator = asset["generator"]
-            asset_type = asset["type"]
-            content_format = self.router.get_content_format(asset_type)
-            resolution = self.router.get_resolution(generator, asset_type)
-
-            if generator == "z_image":
-                prompt = (
-                    "A w1man, in a beautiful %s setting, "
-                    "professional photography, natural lighting, "
-                    "high quality, detailed." % theme
-                )
-            elif generator == "nano_banana":
-                prompt = (
-                    "Beautiful %s scene, detail shot, "
-                    "natural lighting, real photo, photorealistic" % theme
-                )[:150]
-            else:
-                prompt = "A w1man, %s, clean background, full body" % theme
-
-            prompts.append({
-                "asset_id": asset["asset_id"],
-                "type": asset_type,
-                "generator": generator,
-                "content_format": content_format,
-                "resolution": resolution,
-                "prompt": prompt,
-                "mood": "natural",
-                "camera_framing": "medium",
-            })
-
-        return {"prompts": prompts}
 
     # ── Telegram Helpers ─────────────────────────────────────────
 
