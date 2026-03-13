@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-RunPod Z-Image Turbo Generator — calls the ComfyUI endpoint to generate images.
+Z-Image Turbo Generator — calls local ComfyUI via SSH tunnel to generate images.
+
+Architecture: VPS -> SSH reverse tunnel -> Laptop (ComfyUI on RTX 4070)
+The SSH tunnel maps localhost:8001 on VPS to localhost:8001 on the laptop.
 
 Usage:
   python3 runpod_generator.py <username>           # generate from creative_prompts/<username>_prompts.json
@@ -9,7 +12,6 @@ Usage:
 """
 
 import argparse
-import base64
 import json
 import os
 import random
@@ -20,10 +22,8 @@ from datetime import datetime, timezone
 
 WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
 
-# RunPod endpoint config
-RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
-RUNPOD_ENDPOINT = os.environ.get("RUNPOD_ENDPOINT", "4ijgr28bctaysk")
-BASE_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}"
+# ComfyUI endpoint config (via SSH reverse tunnel: laptop:8001 -> VPS localhost:8001)
+COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8001")
 
 # Aspect ratio presets for Instagram content types
 # Maps content_type -> (width, height)
@@ -143,11 +143,36 @@ WORKFLOW = {
 }
 
 
+def _check_comfyui():
+    """Check if ComfyUI is reachable via the SSH tunnel."""
+    try:
+        resp = requests.get(f"{COMFYUI_URL}/system_stats", timeout=10)
+        if resp.status_code == 200:
+            stats = resp.json()
+            devices = stats.get("devices", [])
+            if devices:
+                gpu = devices[0]
+                vram_total_gb = gpu.get("vram_total", 0) / (1024 ** 3)
+                vram_free_gb = gpu.get("vram_free", 0) / (1024 ** 3)
+                print(f"[ComfyUI] Connected: {gpu.get('name', 'unknown')}")
+                print(f"[ComfyUI] VRAM: {vram_free_gb:.1f}/{vram_total_gb:.1f} GB free")
+            return True
+        return False
+    except requests.exceptions.ConnectionError:
+        return False
+    except Exception:
+        return False
+
+
 def generate_image(prompt, content_type="default", poll_interval=5, max_wait=900):
     """
-    Submit a generation job to RunPod and poll until complete.
+    Submit a workflow to ComfyUI and poll until the image is ready.
     Returns PNG image bytes on success, raises Exception on failure.
-    
+
+    Architecture: VPS sends workflow to localhost:8001 (SSH tunnel -> laptop ComfyUI).
+    ComfyUI processes the workflow on the laptop GPU, saves the image, and we
+    retrieve it via the /view endpoint.
+
     Args:
         prompt: Text prompt for image generation
         content_type: 'feed' (4:5), 'story' (9:16), 'reel' (9:16), 'square' (1:1), 'default' (9:16)
@@ -157,84 +182,141 @@ def generate_image(prompt, content_type="default", poll_interval=5, max_wait=900
     workflow = json.loads(json.dumps(WORKFLOW))
     workflow["7"]["inputs"]["text"] = prompt
     workflow["10"]["inputs"]["seed"] = random.randint(1, 2**32)
-    
+
     # Set dimensions based on content type
     width, height = ASPECT_RATIOS.get(content_type, ASPECT_RATIOS["default"])
     workflow["9"]["inputs"]["width"] = width
     workflow["9"]["inputs"]["height"] = height
-    print(f"[RunPod] Content type: {content_type} ({width}x{height})")
+    print(f"[ComfyUI] Content type: {content_type} ({width}x{height})")
 
-    headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
-
-    # 1. Submit job
-    print(f"[RunPod] Submitting job...")
+    # 1. Queue the workflow prompt
+    print("[ComfyUI] Submitting workflow...")
     resp = requests.post(
-        f"{BASE_URL}/run",
-        headers=headers,
-        json={"input": {"workflow": workflow}},
+        f"{COMFYUI_URL}/prompt",
+        json={"prompt": workflow},
         timeout=30,
     )
 
     if resp.status_code != 200:
-        raise Exception(f"RunPod submit failed ({resp.status_code}): {resp.text[:300]}")
+        raise Exception(f"ComfyUI submit failed ({resp.status_code}): {resp.text[:300]}")
 
-    job_data = resp.json()
-    job_id = job_data.get("id")
-    if not job_id:
-        raise Exception(f"No job ID in response: {job_data}")
+    prompt_data = resp.json()
+    prompt_id = prompt_data.get("prompt_id")
+    if not prompt_id:
+        raise Exception(f"No prompt_id in response: {prompt_data}")
 
-    print(f"[RunPod] Job submitted: {job_id}")
-    print(f"[RunPod] Status: {job_data.get('status', 'unknown')}")
+    print(f"[ComfyUI] Workflow queued: {prompt_id}")
 
-    # 2. Poll for result
+    # 2. Poll /history/{prompt_id} until the job is done
     start_time = time.time()
     while True:
         elapsed = time.time() - start_time
         if elapsed > max_wait:
-            raise Exception(f"Timeout after {max_wait}s waiting for job {job_id}")
+            raise Exception(f"Timeout after {max_wait}s waiting for prompt {prompt_id}")
 
         time.sleep(poll_interval)
 
-        status_resp = requests.get(
-            f"{BASE_URL}/status/{job_id}",
-            headers=headers,
-            timeout=30,
-        )
-
-        if status_resp.status_code != 200:
-            print(f"[RunPod] Status check failed ({status_resp.status_code}), retrying...")
+        try:
+            history_resp = requests.get(
+                f"{COMFYUI_URL}/history/{prompt_id}",
+                timeout=30,
+            )
+        except requests.exceptions.ConnectionError:
+            print(f"[ComfyUI] Connection lost, retrying... ({elapsed:.0f}s elapsed)")
             continue
 
-        data = status_resp.json()
-        status = data.get("status", "unknown")
+        if history_resp.status_code != 200:
+            print(f"[ComfyUI] History check failed ({history_resp.status_code}), retrying...")
+            continue
 
-        if status == "COMPLETED":
-            print(f"[RunPod] Job completed in {elapsed:.0f}s")
-            output = data.get("output", {})
-            images = output.get("images", [])
-            if not images:
-                raise Exception(f"No images in output: {output}")
-            img_b64 = images[0].get("data", "")
-            if not img_b64:
-                raise Exception("Empty image data in response")
-            return base64.b64decode(img_b64)
+        history = history_resp.json()
 
-        elif status == "FAILED":
-            error = data.get("error", "Unknown error")
-            raise Exception(f"Job failed: {error}")
+        if prompt_id not in history:
+            # Job still in queue or processing
+            try:
+                queue_resp = requests.get(f"{COMFYUI_URL}/queue", timeout=10)
+                if queue_resp.status_code == 200:
+                    queue_data = queue_resp.json()
+                    running = queue_data.get("queue_running", [])
+                    pending = queue_data.get("queue_pending", [])
+                    if running:
+                        print(f"[ComfyUI] Processing... ({elapsed:.0f}s elapsed)")
+                    elif pending:
+                        print(f"[ComfyUI] In queue ({len(pending)} pending)... ({elapsed:.0f}s elapsed)")
+                    else:
+                        print(f"[ComfyUI] Waiting... ({elapsed:.0f}s elapsed)")
+            except Exception:
+                print(f"[ComfyUI] Waiting... ({elapsed:.0f}s elapsed)")
+            continue
 
-        elif status in ("IN_QUEUE", "IN_PROGRESS"):
-            print(f"[RunPod] {status} ({elapsed:.0f}s elapsed)...")
+        # Job finished — extract output image info
+        job_result = history[prompt_id]
 
-        else:
-            print(f"[RunPod] Unknown status: {status} ({elapsed:.0f}s elapsed)")
+        # Check for errors in status
+        status_data = job_result.get("status", {})
+        if status_data.get("status_str") == "error":
+            messages = status_data.get("messages", [])
+            error_msg = str(messages) if messages else "Unknown error"
+            raise Exception(f"ComfyUI workflow failed: {error_msg}")
+
+        outputs = job_result.get("outputs", {})
+
+        # Find the SaveImage node output (node 13)
+        save_node_output = outputs.get("13", {})
+        images_list = save_node_output.get("images", [])
+
+        if not images_list:
+            # Try to find any node with images output
+            for node_id, node_output in outputs.items():
+                if "images" in node_output and node_output["images"]:
+                    images_list = node_output["images"]
+                    break
+
+        if not images_list:
+            raise Exception(f"No images in output: {outputs}")
+
+        image_info = images_list[0]
+        filename = image_info.get("filename")
+        subfolder = image_info.get("subfolder", "")
+        img_type = image_info.get("type", "output")
+
+        if not filename:
+            raise Exception(f"No filename in image info: {image_info}")
+
+        print(f"[ComfyUI] Job completed in {elapsed:.0f}s — downloading {filename}")
+
+        # 3. Download the generated image via /view endpoint
+        view_params = {"filename": filename, "type": img_type}
+        if subfolder:
+            view_params["subfolder"] = subfolder
+
+        view_resp = requests.get(
+            f"{COMFYUI_URL}/view",
+            params=view_params,
+            timeout=60,
+        )
+
+        if view_resp.status_code != 200:
+            raise Exception(f"Failed to download image ({view_resp.status_code}): {view_resp.text[:200]}")
+
+        img_bytes = view_resp.content
+        if len(img_bytes) < 1000:
+            raise Exception(f"Image too small ({len(img_bytes)} bytes), likely an error")
+
+        print(f"[ComfyUI] Image downloaded: {len(img_bytes) / 1024:.0f} KB")
+        return img_bytes
 
 
 def test_endpoint():
-    """Test the RunPod endpoint with a simple prompt."""
-    print("[Test] Testing RunPod Z-Image Turbo endpoint...")
-    print(f"[Test] Endpoint: {BASE_URL}")
-    print(f"[Test] API Key: {RUNPOD_API_KEY[:12]}...")
+    """Test the ComfyUI endpoint via SSH tunnel."""
+    print("[Test] Testing ComfyUI Z-Image Turbo (via SSH tunnel)...")
+    print(f"[Test] ComfyUI URL: {COMFYUI_URL}")
+
+    # Check connectivity first
+    if not _check_comfyui():
+        print("[Test] FAILED: Cannot reach ComfyUI. Is the SSH tunnel running?")
+        print("[Test] On laptop: ssh -R 8001:localhost:8001 -p 2222 root@<VPS_IP>")
+        return False
 
     test_prompt = (
         "A w1man, standing in a sunlit modern apartment, "
@@ -279,12 +361,18 @@ def generate_from_prompts(username, limit=None):
     
     skipped_nano = len(all_prompts) - len(prompts)
     if skipped_nano > 0:
-        print(f"[RunPod] Skipping {skipped_nano} nano_banana prompts (handled by nano_banana_generator.py)")
-    
+        print(f"[ComfyUI] Skipping {skipped_nano} nano_banana prompts (handled by nano_banana_generator.py)")
+
     if limit:
         prompts = prompts[:limit]
 
-    print(f"[RunPod] Generating {len(prompts)} Z-Image character images for @{username}...")
+    # Check ComfyUI connectivity before starting batch
+    if not _check_comfyui():
+        print("[ERROR] Cannot reach ComfyUI. Is the SSH tunnel running?")
+        print("[ERROR] On laptop: ssh -R 8001:localhost:8001 -p 2222 root@<VPS_IP>")
+        sys.exit(1)
+
+    print(f"[ComfyUI] Generating {len(prompts)} Z-Image character images for @{username}...")
 
     output_dir = os.path.join(WORKSPACE, "output", "photos", username)
     os.makedirs(output_dir, exist_ok=True)
@@ -338,14 +426,14 @@ def generate_from_prompts(username, limit=None):
     log_path = os.path.join(output_dir, "generation_log.json")
     with open(log_path, "w") as f:
         json.dump(log, f, indent=2, ensure_ascii=False)
-    print(f"\n[RunPod] Generation complete: {log['total_success']}/{log['total_requested']} successful")
-    print(f"[RunPod] Log saved: {log_path}")
+    print(f"\n[ComfyUI] Generation complete: {log['total_success']}/{log['total_requested']} successful")
+    print(f"[ComfyUI] Log saved: {log_path}")
 
     return log
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RunPod Z-Image Turbo Generator")
+    parser = argparse.ArgumentParser(description="Z-Image Turbo Generator (ComfyUI via SSH tunnel)")
     parser.add_argument("username", nargs="?", help="Generate from creative_prompts/<username>_prompts.json")
     parser.add_argument("--prompt", help="Generate a single image from a prompt")
     parser.add_argument("--test", action="store_true", help="Test endpoint with a simple prompt")
