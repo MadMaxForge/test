@@ -74,7 +74,8 @@ class MCConductor:
         self.publisher = PackagePublish()
         self.telegram = TelegramManager()
         self.bot = None
-        self._processed_callbacks = set()  # Idempotency: track processed callback IDs
+        from collections import OrderedDict
+        self._processed_callbacks = OrderedDict()  # Idempotency: track processed callback IDs
 
     # ── Main Event Loop ──────────────────────────────────────────
 
@@ -254,11 +255,11 @@ class MCConductor:
         if callback_id in self._processed_callbacks:
             print("[MC] Duplicate callback ignored: %s" % callback_id)
             return
-        self._processed_callbacks.add(callback_id)
+        self._processed_callbacks[callback_id] = True
 
-        # Keep set bounded
-        if len(self._processed_callbacks) > 1000:
-            self._processed_callbacks = set(list(self._processed_callbacks)[-500:])
+        # Keep OrderedDict bounded (evict oldest entries)
+        while len(self._processed_callbacks) > 1000:
+            self._processed_callbacks.popitem(last=False)
 
         print("[MC] Callback received: %s" % callback_data)
 
@@ -315,9 +316,9 @@ class MCConductor:
         """All assets approved — move to text generation."""
         state = self.state_manager.get_package(package_id)
 
-        # Mark all pending_review assets as approved
+        # Mark all generated/pending_review assets as approved
         for asset in state["assets"]:
-            if asset["status"] == "pending_review":
+            if asset["status"] in ("pending_review", "generated"):
                 self.state_manager.update_asset_status(
                     package_id, asset["asset_id"], "approved")
 

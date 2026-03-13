@@ -219,9 +219,11 @@ class ReferenceQueue:
 
         post_id = self.extract_post_id(url)
         now = datetime.now(timezone.utc)
-        ref_id = "ref_%s_%s" % (
+        import uuid
+        ref_id = "ref_%s_%s_%s" % (
             queue_key.replace("_references", ""),
             now.strftime("%Y%m%d_%H%M%S"),
+            uuid.uuid4().hex[:6],
         )
 
         entry = {

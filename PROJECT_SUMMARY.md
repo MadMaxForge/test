@@ -37,10 +37,10 @@ Text Review in Telegram --> Approved --> Scheduled/Published
 ```
 
 ## VPS Server
-- **Host**: 188.116.27.253
+- **Host**: Set via `NEW_VPS_HOST` secret (do not commit IP to repo)
 - **SSH Port**: 2222 (not default 22!)
 - **User**: root
-- **Command**: `ssh -p 2222 root@188.116.27.253`
+- **Command**: `ssh -p 2222 root@$NEW_VPS_HOST`
 - **Workspace**: `/root/.openclaw/workspace/`
 - **Scripts**: `/root/.openclaw/workspace/scripts/`
 - **Env vars**: `/root/.openclaw/workspace/.env`

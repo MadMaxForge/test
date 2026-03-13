@@ -5,8 +5,8 @@ Automated Instagram content generation via Telegram bot. One reference URL produ
 ## Quick Start
 
 ```bash
-# 1. SSH to VPS
-ssh -p 2222 root@188.116.27.253
+# 1. SSH to VPS (IP stored in NEW_VPS_HOST secret, not committed to repo)
+ssh -p 2222 root@$NEW_VPS_HOST
 
 # 2. Set env vars
 export $(grep -v '^#' /root/.openclaw/workspace/.env | xargs)
