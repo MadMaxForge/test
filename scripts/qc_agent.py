@@ -1,0 +1,596 @@
+#!/usr/bin/env python3
+"""
+QC Agent - quality checks generated images using vision model.
+Scores each image 0-10, threshold >= 7 to pass.
+Supports retry logic with new seed (up to 3 attempts).
+
+Usage: python3 qc_agent.py <username> [--threshold N] [--max-retries N]
+"""
+
+import json
+import os
+import re
+import sys
+import base64
+import requests
+import random
+import time
+import io
+from pathlib import Path
+from datetime import datetime, timezone
+
+WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+MODEL = "google/gemini-2.0-flash-lite-001"
+
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
+RUNPOD_ENDPOINT = os.environ.get("RUNPOD_ENDPOINT", "")
+RUNPOD_BASE_URL = "https://api.runpod.ai/v2/" + RUNPOD_ENDPOINT
+
+QC_SYSTEM_PROMPT = """You are QC - a strict AI quality control agent for AI-generated Instagram images.
+You receive a generated image and the prompt that was used to create it.
+
+Your job is to evaluate the image on these 6 criteria. Be STRICT and look carefully:
+
+1. Prompt adherence (0-10): Does the image match the described scene, outfit, setting, pose, camera angle?
+2. Character consistency (0-10): Does the character look natural? Correct hair, face, body proportions? No uncanny valley?
+3. Technical quality (0-10): This is the MOST CRITICAL check. Look very carefully for:
+   - Extra or missing limbs (3 arms, 6 fingers, missing hand, etc.) = score 0-3
+   - Mirror/reflection inconsistencies (reflection doesn't match the person) = score 0-4
+   - Distorted hands, fingers fused together, extra fingers = score 0-4
+   - Face distortions, asymmetric eyes, melted features = score 0-4
+   - Background glitches, floating objects, impossible geometry = score 0-5
+   - Blurry patches in subject (not background bokeh) = score 0-5
+   - Text/watermark artifacts = score 0-5
+   If ANY of the above are present, max score for this criterion is 5.
+4. Composition (0-10): Good framing for vertical Instagram? Subject centered? Background appropriate?
+5. Content safety (0-10): No nudity, no inappropriate content, Instagram-safe?
+6. Mirror/Reflection quality (0-10): CRITICAL CHECK - inspect EVERY reflective surface:
+   - Mirrors: does the reflection match the person EXACTLY? Same pose, same clothing, same hair?
+   - Windows/glass: are there ghost reflections or duplicated elements?
+   - Shiny surfaces: do reflections on tables/floors look physically correct?
+   - Studio equipment: are there visible softboxes, ring lights, light stands in the background?
+   - Reflective objects: sunglasses, jewelry, screens - do they show impossible reflections?
+   - Hair in reflections: braids, ponytails, hair length MUST match between person and reflection
+   - Extra body parts in reflections: if reflection shows 3 arms or extra fingers = score 0
+   - If NO reflective surfaces are present, score 10 (not applicable)
+   - If ANY reflection artifact is found, max score for this criterion is 3
+
+IMPORTANT ARTIFACT CHECKS (look at these BEFORE scoring):
+- Count the number of arms visible (including in reflections). If more than 2 arms -> FAIL technical quality
+- Count the number of hands visible (including in reflections). If more than 2 hands -> FAIL technical quality
+- Count fingers on each visible hand. If any hand has more/fewer than 5 fingers -> reduce score
+- MIRROR/REFLECTION DEEP CHECK (CRITICAL):
+  * If there is a mirror/reflection, compare the person and their reflection side by side
+  * Check that the reflection matches the actual person (same pose, same clothing, correct mirror physics)
+  * Check hair consistency: no hair appearing/disappearing between main image and reflection
+  * Check that studio equipment (softboxes, light stands, cameras) is NOT visible in background or reflections
+  * Check that no extra limbs appear ONLY in the reflection but not on the person
+  * Check window reflections for ghost images or duplicated body parts
+  * If background contains ANY mirror, glass, or reflective surface — examine it pixel by pixel
+- Background consistency: does the background match the prompt description? No unexpected objects?
+
+Calculate OVERALL score = weighted average:
+  - technical_quality * 0.25 + mirror_reflection * 0.20 + prompt_adherence * 0.20
+  - character_consistency * 0.15 + composition * 0.10 + content_safety * 0.10
+
+Output ONLY a valid JSON object:
+{
+  "scores": {
+    "prompt_adherence": 0,
+    "character_consistency": 0,
+    "technical_quality": 0,
+    "composition": 0,
+    "content_safety": 0,
+    "mirror_reflection": 0,
+    "overall": 0.0
+  },
+  "pass": true,
+  "artifact_check": {
+    "arms_count": 2,
+    "hands_count": 2,
+    "finger_issues": false,
+    "mirror_present": false,
+    "mirror_consistent": true,
+    "reflection_artifacts": [],
+    "studio_equipment_visible": false,
+    "extra_limbs": false,
+    "background_matches_prompt": true
+  },
+  "issues": ["issue1 if any"],
+  "notes": "brief assessment"
+}
+
+IMPORTANT: Output ONLY the JSON. No text before or after. No markdown fences.
+Be STRICT. It is better to fail a good image than to pass a bad one.
+Pay EXTRA attention to mirrors, reflections, and any reflective surfaces."""
+
+
+def parse_json_response(text):
+    """Robustly parse JSON from LLM response."""
+    if text is None:
+        print("[ERROR] Received None response from API")
+        return None
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    m = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    start = text.find('{')
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+    m = re.search(r'(\{[\s\S]*\})', text)
+    if m:
+        candidate = m.group(1)
+        open_b = candidate.count('{') - candidate.count('}')
+        open_a = candidate.count('[') - candidate.count(']')
+        if open_b > 0 or open_a > 0:
+            last_complete = max(candidate.rfind('",'), candidate.rfind('"],'), candidate.rfind('},'))
+            if last_complete > 0:
+                candidate = candidate[:last_complete + 1]
+            candidate += ']' * max(0, open_a) + '}' * max(0, open_b)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    print("[ERROR] Could not parse JSON from QC response")
+    return None
+
+
+def evaluate_image(image_path, prompt_text):
+    """Send image to vision model for QC evaluation."""
+    if not OPENROUTER_API_KEY:
+        print("[ERROR] OPENROUTER_API_KEY not set")
+        return None
+
+    with open(image_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    ext = Path(image_path).suffix.lower()
+    mime = "image/png" if ext == ".png" else "image/jpeg"
+
+    content_parts = [
+        {"type": "text", "text": (
+            "Evaluate this AI-generated image for Instagram quality.\n\n"
+            "The prompt used to generate this image was:\n"
+            "---\n" + prompt_text + "\n---\n\n"
+            "Score each criterion 0-10 and determine if overall >= 7 (pass).\n"
+            "Output ONLY the JSON evaluation object."
+        )},
+        {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + img_b64}}
+    ]
+
+    messages = [
+        {"role": "system", "content": QC_SYSTEM_PROMPT},
+        {"role": "user", "content": content_parts},
+    ]
+
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer " + OPENROUTER_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MODEL,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 16000,
+        },
+        timeout=180,
+    )
+
+    if resp.status_code != 200:
+        print("[ERROR] QC API returned %d" % resp.status_code)
+        return None
+
+    data = resp.json()
+    choices = data.get("choices", [])
+    if not choices:
+        print("[ERROR] No choices in QC API response: %s" % str(data)[:500])
+        return None
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        print("[ERROR] Empty content in QC response. Full response: %s" % str(data)[:500])
+        return None
+    return parse_json_response(content)
+
+
+def compress_image_for_qc(image_path, max_size=768, quality=80):
+    """Compress image for QC: resize to max_size px and convert to JPEG.
+    Returns (base64_string, mime_type)."""
+    try:
+        from PIL import Image
+        img = Image.open(image_path)
+        # Resize keeping aspect ratio
+        w, h = img.size
+        if max(w, h) > max_size:
+            scale = max_size / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Convert to JPEG for smaller payload
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return b64, "image/jpeg"
+    except ImportError:
+        # PIL not available, send raw but smaller
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        ext = Path(image_path).suffix.lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        return b64, mime
+
+
+def evaluate_images_batch(image_paths, prompts_list, batch_size=4):
+    """Evaluate images in batched API calls (batch_size images per call) to save costs.
+    Images are compressed to JPEG ~768px for smaller payloads.
+    Returns a list of QC results, one per image."""
+    if not OPENROUTER_API_KEY:
+        print("[ERROR] OPENROUTER_API_KEY not set")
+        return None
+
+    all_results = []
+
+    # Split into sub-batches
+    for batch_start in range(0, len(image_paths), batch_size):
+        batch_end = min(batch_start + batch_size, len(image_paths))
+        batch_paths = image_paths[batch_start:batch_end]
+        batch_prompts = prompts_list[batch_start:batch_end]
+
+        print("[QC] Batch %d-%d of %d images..." % (batch_start + 1, batch_end, len(image_paths)))
+
+        content_parts = []
+        text_intro = "Evaluate these %d AI-generated images for Instagram quality.\n\n" % len(batch_paths)
+
+        for i, img_path in enumerate(batch_paths):
+            prompt_text = batch_prompts[i] if i < len(batch_prompts) else ""
+            text_intro += "IMAGE %d (%s):\nPrompt: %s\n\n" % (i + 1, Path(img_path).name, prompt_text[:300])
+
+        text_intro += ("For EACH image, score all 6 criteria 0-10.\n"
+                       "Output ONLY a JSON object with this structure:\n"
+                       '{"results": [{"image": "filename", "scores": {"prompt_adherence": N, '
+                       '"character_consistency": N, "technical_quality": N, "composition": N, '
+                       '"content_safety": N, "mirror_reflection": N, "overall": N.N}, '
+                       '"pass": true/false, "artifact_check": {...}, "issues": [...], '
+                       '"notes": "..."}]}\nNo markdown fences.')
+
+        content_parts.append({"type": "text", "text": text_intro})
+
+        for img_path in batch_paths:
+            img_b64, mime = compress_image_for_qc(img_path)
+            content_parts.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + img_b64}})
+
+        messages = [
+            {"role": "system", "content": QC_SYSTEM_PROMPT},
+            {"role": "user", "content": content_parts},
+        ]
+
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer " + OPENROUTER_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": MODEL,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": 8000,
+            },
+            timeout=120,
+        )
+
+        if resp.status_code != 200:
+            print("[ERROR] QC batch API returned %d: %s" % (resp.status_code, resp.text[:300]))
+            return None
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            print("[ERROR] No choices in QC batch response")
+            return None
+        content = choices[0].get("message", {}).get("content")
+        if not content:
+            print("[ERROR] Empty content in QC batch response")
+            return None
+
+        parsed = parse_json_response(content)
+        if parsed and "results" in parsed:
+            all_results.extend(parsed["results"])
+        elif parsed:
+            all_results.append(parsed)
+        else:
+            print("[ERROR] Could not parse batch %d-%d response" % (batch_start + 1, batch_end))
+            return None
+
+    return all_results if len(all_results) >= len(image_paths) else None
+
+
+def regenerate_image(prompt_text):
+    """Regenerate an image via RunPod with a new random seed."""
+    WORKFLOW = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default"}},
+        "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": "REDZ15_DetailDaemonZ_lora_v1.1.safetensors", "strength_model": 0.50}},
+        "3": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["2", 0], "lora_name": "Z-Breast-Slider.safetensors", "strength_model": 0.45}},
+        "4": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["3", 0], "lora_name": "w1man.safetensors", "strength_model": 1.00}},
+        "5": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["4", 0], "shift": 3}},
+        "6": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_3_4b.safetensors", "type": "lumina2", "device": "default"}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["6", 0], "text": prompt_text}},
+        "8": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["7", 0]}},
+        "9": {"class_type": "EmptySD3LatentImage", "inputs": {"width": 1088, "height": 1920, "batch_size": 1}},
+        "10": {"class_type": "KSampler", "inputs": {
+            "model": ["5", 0], "positive": ["7", 0], "negative": ["8", 0],
+            "latent_image": ["9", 0], "seed": random.randint(1, 2**32),
+            "control_after_generate": "randomize", "steps": 10, "cfg": 1,
+            "sampler_name": "euler", "scheduler": "simple", "denoise": 1
+        }},
+        "11": {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}},
+        "12": {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0], "vae": ["11", 0]}},
+        "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": "z-image"}}
+    }
+
+    resp = requests.post(
+        RUNPOD_BASE_URL + "/run",
+        headers={"Authorization": "Bearer " + RUNPOD_API_KEY},
+        json={"input": {"workflow": WORKFLOW}},
+        timeout=30
+    )
+    if resp.status_code != 200:
+        print("[ERROR] RunPod submit failed: %d" % resp.status_code)
+        return None
+
+    job_id = resp.json().get("id")
+    if not job_id:
+        print("[ERROR] No job ID from RunPod")
+        return None
+
+    print("    [RunPod] Job %s - polling..." % job_id)
+    start = time.time()
+    while time.time() - start < 600:
+        time.sleep(5)
+        elapsed = int(time.time() - start)
+        sr = requests.get(
+            RUNPOD_BASE_URL + "/status/" + job_id,
+            headers={"Authorization": "Bearer " + RUNPOD_API_KEY},
+            timeout=30
+        )
+        sdata = sr.json()
+        status = sdata.get("status", "UNKNOWN")
+        if status == "COMPLETED":
+            output = sdata.get("output", {})
+            imgs = output.get("images", []) if isinstance(output, dict) else []
+            if imgs:
+                return base64.b64decode(imgs[0]["data"])
+            return None
+        elif status == "FAILED":
+            err = sdata.get("error", "unknown")
+            print("    [RunPod] FAILED: %s" % str(err))
+            return None
+        if elapsed % 30 == 0:
+            print("    [RunPod] %ds - %s" % (elapsed, status))
+    return None
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 qc_agent.py <username> [--threshold N] [--max-retries N]")
+        sys.exit(1)
+
+    username = sys.argv[1]
+    threshold = 7
+    max_retries = 3
+
+    if "--threshold" in sys.argv:
+        idx = sys.argv.index("--threshold")
+        threshold = int(sys.argv[idx + 1])
+    if "--max-retries" in sys.argv:
+        idx = sys.argv.index("--max-retries")
+        max_retries = int(sys.argv[idx + 1])
+
+    print("[QC] Quality checking images for @%s (threshold=%d, max_retries=%d)" % (username, threshold, max_retries))
+
+    # Load memory for learned artifact patterns
+    mem = None
+    qc_memory_context = ""
+    try:
+        from agent_memory import AgentMemory
+        mem = AgentMemory()
+        qc_memory_context = mem.build_qc_context(max_examples=5)
+        if qc_memory_context:
+            print("[QC] Loaded learned artifact patterns from memory")
+    except Exception as e:
+        print("[QC] Warning: Could not load memory: %s" % e)
+
+    # Load creative prompts for reference
+    prompts_path = os.path.join(WORKSPACE, "creative_prompts", username + "_prompts.json")
+    prompts_data = {}
+    if os.path.exists(prompts_path):
+        with open(prompts_path) as f:
+            prompts_data = json.load(f)
+
+    # Find generated images
+    photos_dir = os.path.join(WORKSPACE, "output", "photos", username)
+    if not os.path.exists(photos_dir):
+        print("[ERROR] No photos directory: %s" % photos_dir)
+        sys.exit(1)
+
+    image_files = sorted(Path(photos_dir).glob("*.png"))
+    if not image_files:
+        image_files = sorted(Path(photos_dir).glob("*.jpg"))
+
+    if not image_files:
+        print("[ERROR] No images found in %s" % photos_dir)
+        sys.exit(1)
+
+    print("[QC] Found %d images to check" % len(image_files))
+
+    prompts_list = prompts_data.get("prompts", [])
+
+    # Build a map from image filename pattern to prompt for correct matching
+    prompt_by_index = {}
+    for idx, p in enumerate(prompts_list):
+        prompt_by_index[idx + 1] = p.get("prompt", "")
+
+    # Match prompts to images
+    matched_prompts = []
+    for i, img_path in enumerate(image_files):
+        prompt_text = ""
+        fname = img_path.stem
+        parts = fname.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            img_idx = int(parts[1])
+            prompt_text = prompt_by_index.get(img_idx, "")
+        if not prompt_text and i < len(prompts_list):
+            prompt_text = prompts_list[i].get("prompt", "")
+        matched_prompts.append(prompt_text)
+
+    qc_results = []
+
+    # Try batch evaluation first (single API call for all images — much cheaper)
+    print("[QC] Attempting batch evaluation (1 API call for %d images)..." % len(image_files))
+    batch_results = evaluate_images_batch(
+        [str(p) for p in image_files], matched_prompts
+    )
+
+    if batch_results and len(batch_results) >= len(image_files):
+        print("[QC] Batch evaluation successful!")
+        for i, img_path in enumerate(image_files):
+            result = batch_results[i] if i < len(batch_results) else None
+            if result is None:
+                result = {"scores": {"overall": 0}, "pass": False, "issues": ["batch eval missing"], "notes": "No result"}
+            scores = result.get("scores", {})
+            overall = scores.get("overall", 0)
+            result["image"] = img_path.name
+            result["attempts"] = 1
+            result["final_pass"] = overall >= threshold
+            print("  [QC] %s: %.1f/10 (%s)" % (img_path.name, overall, "PASS" if overall >= threshold else "FAIL"))
+            qc_results.append(result)
+    else:
+        # Fallback: evaluate each image individually (more expensive but more reliable)
+        print("[QC] Batch failed or incomplete, falling back to individual evaluation...")
+        for i, img_path in enumerate(image_files):
+            prompt_text = matched_prompts[i]
+            print("\n[QC] Image %d/%d: %s" % (i + 1, len(image_files), img_path.name))
+
+            best_result = None
+            best_score = 0
+
+            for attempt in range(max_retries):
+                if attempt > 0:
+                    print("  [QC] Retry %d/%d - regenerating with new seed..." % (attempt, max_retries - 1))
+                    new_bytes = regenerate_image(prompt_text)
+                    if new_bytes:
+                        with open(str(img_path), "wb") as f:
+                            f.write(new_bytes)
+                        print("  [QC] Regenerated image saved")
+                    else:
+                        print("  [QC] Regeneration failed, keeping current image")
+
+                print("  [QC] Evaluating (attempt %d)..." % (attempt + 1))
+                result = evaluate_image(str(img_path), prompt_text)
+
+                if result is None:
+                    print("  [QC] Evaluation failed")
+                    continue
+
+                scores = result.get("scores", {})
+                overall = scores.get("overall", 0)
+                print("  [QC] Score: %.1f/10 (%s)" % (overall, "PASS" if overall >= threshold else "FAIL"))
+
+                if overall > best_score:
+                    best_score = overall
+                    best_result = result
+
+                if overall >= threshold:
+                    break
+
+            if best_result is None:
+                best_result = {"scores": {"overall": 0}, "pass": False, "issues": ["evaluation failed"], "notes": "Could not evaluate"}
+
+            best_result["image"] = img_path.name
+            best_result["attempts"] = min(attempt + 1, max_retries)
+            best_result["final_pass"] = best_score >= threshold
+            qc_results.append(best_result)
+
+    # Summary
+    passed = sum(1 for r in qc_results if r.get("final_pass", False))
+    total = len(qc_results)
+    avg_score = sum(r.get("scores", {}).get("overall", 0) for r in qc_results) / max(total, 1)
+
+    qc_report = {
+        "username": username,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "threshold": threshold,
+        "total_images": total,
+        "passed": passed,
+        "failed": total - passed,
+        "average_score": round(avg_score, 1),
+        "results": qc_results
+    }
+
+    # Save QC results to memory
+    try:
+        if mem is None:
+            from agent_memory import AgentMemory
+            mem = AgentMemory()
+        for r in qc_results:
+            score = r.get("scores", {}).get("overall", 0)
+            issues = r.get("issues", [])
+            # Log artifact patterns for learning
+            if issues:
+                mem.log_event("qc", "artifacts_detected", {
+                    "image": r.get("image", ""),
+                    "score": score,
+                    "issues": issues,
+                    "notes": r.get("notes", ""),
+                }, lesson="Image %s scored %.1f - issues: %s" % (
+                    r.get("image", "?"), score, ", ".join(issues[:3])))
+        mem.log_event("qc", "batch_complete", {
+            "username": username,
+            "total": total,
+            "passed": passed,
+            "avg_score": round(avg_score, 1),
+        }, lesson="QC batch for @%s: %d/%d passed, avg %.1f" % (
+            username, passed, total, avg_score))
+        mem.close()
+        print("[QC] Results saved to memory database")
+    except Exception as e:
+        print("[QC] Warning: Could not save to memory: %s" % e)
+
+    # Save QC report
+    output_dir = os.path.join(WORKSPACE, "qc_reports")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, username + "_qc.json")
+
+    with open(output_path, "w") as f:
+        json.dump(qc_report, f, indent=2, ensure_ascii=False)
+
+    print("\n[QC] === REPORT ===")
+    print("[QC] Total: %d | Passed: %d | Failed: %d | Avg Score: %.1f" % (total, passed, total - passed, avg_score))
+    print("[QC] Report saved: %s" % output_path)
+
+
+if __name__ == "__main__":
+    main()
