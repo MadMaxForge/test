@@ -28,7 +28,7 @@ class Config:
             google_script_url=os.environ["GOOGLE_SCRIPT_URL"],
             google_script_token=os.environ["GOOGLE_SCRIPT_TOKEN"],
             owner_chat_id=int(os.environ.get("OWNER_CHAT_ID", "0")),
-            llm_model=os.environ.get("LLM_MODEL", "google/gemini-2.0-flash"),
+            llm_model=os.environ.get("LLM_MODEL", "google/gemini-2.5-flash"),
             reminder_check_interval=int(os.environ.get("REMINDER_CHECK_INTERVAL", "120")),
             reminder_before_minutes=reminder_minutes,
             timezone=os.environ.get("TIMEZONE", "Europe/Moscow"),
