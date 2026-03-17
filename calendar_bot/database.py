@@ -79,8 +79,10 @@ class Database:
         )
         await self.db.commit()
 
-    async def save_message(self, chat_id: int, role: str, content: str) -> None:
+    async def save_message(self, chat_id: int, role: str, content: str | None) -> None:
         assert self.db is not None
+        if not content:
+            content = ""
         await self.db.execute(
             "INSERT INTO conversation_history (chat_id, role, content) VALUES (?, ?, ?)",
             (chat_id, role, content),

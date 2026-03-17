@@ -49,6 +49,18 @@ class ReminderScheduler:
             replace_existing=True,
         )
 
+        # Check overdue tasks periodically (every 4 hours)
+        self.scheduler.add_job(
+            self._check_overdue,
+            CronTrigger(
+                hour="10,14,18",
+                minute=0,
+                timezone=self.config.timezone,
+            ),
+            id="check_overdue",
+            replace_existing=True,
+        )
+
         # Weekly cleanup of old reminders
         self.scheduler.add_job(
             self._cleanup,
@@ -162,6 +174,61 @@ class ReminderScheduler:
 
         except Exception as e:
             logger.error("Daily digest error: %s", e)
+
+    async def _check_overdue(self) -> None:
+        if self.config.owner_chat_id == 0:
+            return
+
+        try:
+            result = await self.calendar.get_overdue()
+            if "error" in result:
+                logger.error("Error fetching overdue events: %s", result["error"])
+                return
+
+            overdue_events = result.get("events", [])
+            if len(overdue_events) < 3:
+                return
+
+            # Check if we already notified about overdue today
+            today_key = f"overdue_notified_{datetime.now(self.tz).strftime('%Y-%m-%d')}"
+            if await self.db.is_reminder_sent(today_key, "overdue_check"):
+                return
+
+            # Get free slots for today
+            free_result = await self.calendar.get_free_busy()
+            free_slots = free_result.get("free", [])
+
+            msg = (
+                f"\u26a0\ufe0f <b>\u041d\u0430\u043a\u043e\u043f\u0438\u043b\u043e\u0441\u044c {len(overdue_events)} \u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043d\u044b\u0445 \u0437\u0430\u0434\u0430\u0447!</b>\n\n"
+            )
+
+            for i, event in enumerate(overdue_events[:5], 1):
+                end = datetime.fromisoformat(
+                    event["end"].replace("Z", "+00:00")
+                ).astimezone(self.tz)
+                msg += f"{i}. {event['title']} <i>(\u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043e {end.strftime('%d.%m')})</i>\n"
+
+            if len(overdue_events) > 5:
+                msg += f"\n...\u0438 \u0435\u0449\u0451 {len(overdue_events) - 5}\n"
+
+            if free_slots:
+                msg += "\n\U0001f4a1 <b>\u0421\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0435 \u0441\u043b\u043e\u0442\u044b \u0441\u0435\u0433\u043e\u0434\u043d\u044f:</b>\n"
+                for slot in free_slots[:4]:
+                    try:
+                        s = datetime.fromisoformat(slot["start"].replace("Z", "+00:00")).astimezone(self.tz)
+                        e = datetime.fromisoformat(slot["end"].replace("Z", "+00:00")).astimezone(self.tz)
+                        msg += f"  \u2022 {s.strftime('%H:%M')}\u2013{e.strftime('%H:%M')}\n"
+                    except Exception:
+                        pass
+
+            msg += "\n\u041d\u0430\u043f\u0438\u0448\u0438 \u043c\u043d\u0435, \u0435\u0441\u043b\u0438 \u0445\u043e\u0447\u0435\u0448\u044c \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0438 \u2014 \u043f\u043e\u043c\u043e\u0433\u0443 \u043d\u0430\u0439\u0442\u0438 \u043b\u0443\u0447\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f! \U0001f4aa"
+
+            await self.send_message(self.config.owner_chat_id, msg)
+            await self.db.mark_reminder_sent(today_key, "overdue_check")
+            logger.info("Overdue notification sent: %d tasks", len(overdue_events))
+
+        except Exception as e:
+            logger.error("Overdue check error: %s", e)
 
     async def _cleanup(self) -> None:
         try:

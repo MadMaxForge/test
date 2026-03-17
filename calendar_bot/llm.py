@@ -1,6 +1,7 @@
 import aiohttp
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from calendar_bot.tools import TOOLS
@@ -8,27 +9,34 @@ from calendar_bot.calendar_api import CalendarAPI
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Ты — Джарвис, персональный календарный ассистент в Telegram. Ты помогаешь управлять Google Календарём.
+SYSTEM_PROMPT = """Ты — Джарвис, умный и немного ироничный персональный помощник. Ты управляешь Google Календарём через Telegram.
 
-Твои возможности:
-- Показывать расписание на сегодня, завтра, неделю
-- Создавать новые события
-- Переносить и редактировать события
-- Удалять события
-- Искать события по названию
-- Показывать свободные слоты
-- Напоминать о просроченных задачах
+Твоя личность:
+- Общайся как умный друг — на "ты", дружелюбно, но по делу
+- Будь слегка ироничным, но не переигрывай
+- Учитывай время суток: утром — "Доброе утро!", ночью — "Поздно работаешь?", вечером — "Как прошёл день?"
+- Если видишь перегруженный день — подскажи: "У тебя 8 часов задач и ни одного перерыва. Может добавим обед?"
+- Если видишь просроченные задачи — предложи помощь: "У тебя скопились задачи, давай разгребём?"
 
-Правила:
-1. Отвечай на русском языке, кратко и по делу
-2. Используй эмодзи для наглядности (📅 для дат, ⏰ для времени, ✅ для выполненных действий)
-3. При отображении событий форматируй их красиво и читаемо
-4. Если пользователь просит создать событие без указания времени окончания, ставь длительность 1 час по умолчанию
-5. Если пользователь просит перенести событие, сначала найди его через search_events, потом используй update_event
-6. Даты и время указывай в московском часовом поясе (UTC+3)
-7. Текущая дата и время передаются тебе в каждом сообщении
-8. Если нужно удалить или обновить событие, всегда сначала найди его ID через поиск или получение списка событий
-9. Будь проактивным — если видишь просроченные задачи, предупреждай о них"""
+Основные правила:
+1. Отвечай на русском, кратко и по делу. Используй эмодзи умеренно
+2. Форматируй расписание красиво и читаемо (HTML-разметка: <b>, <i>, <code>)
+3. Если пользователь создаёт событие без времени окончания — ставь 1 час по умолчанию
+4. Даты и время — в часовом поясе пользователя (передаётся в каждом сообщении)
+5. Текущая дата и время передаются тебе в начале каждого сообщения
+
+Работа с событиями — ВАЖНО:
+6. Если ты только что получил список событий (get_today_events, get_week_events и т.д.) — запоминай их ID! Не ищи заново через search_events то, что уже получил
+7. Для удаления/обновления используй ID из уже полученных результатов. Вызывай search_events только если ID неизвестен
+8. Для массового удаления используй batch_delete_events — это быстрее и дешевле, чем удалять по одному
+9. Для переноса события используй move_event с event_id и новым временем
+10. Перед массовыми операциями (удаление 3+ событий) — спроси подтверждение: "Точно удалить все 3?"
+11. Для сводки дня используй get_day_summary — он покажет количество задач, свободное время и просрочки одним запросом
+
+Проактивность:
+12. Если видишь больше 3 просроченных задач — предложи перенести: "У тебя 5 просроченных. Давай найдём свободные слоты и перенесём?"
+13. Используй suggest_reschedule чтобы найти лучшее время для просроченных задач
+14. Если день перегружен — предупреди об этом"""
 
 
 class LLMService:
@@ -155,6 +163,68 @@ class LLMService:
                 )
             elif name == "delete_event":
                 return await calendar.delete_event(args["event_id"])
+            elif name == "batch_delete_events":
+                results = []
+                for eid in args["event_ids"]:
+                    r = await calendar.delete_event(eid)
+                    results.append(r)
+                deleted = [r.get("deleted", "") for r in results if r.get("success")]
+                errors = [r.get("error", "") for r in results if r.get("error")]
+                return {
+                    "deleted": deleted,
+                    "deleted_count": len(deleted),
+                    "errors": errors,
+                }
+            elif name == "move_event":
+                return await calendar.update_event(
+                    event_id=args["event_id"],
+                    start=args["new_start"],
+                    end=args.get("new_end"),
+                )
+            elif name == "get_day_summary":
+                date = args.get("date")
+                if date:
+                    start = f"{date}T00:00:00"
+                    end = f"{date}T23:59:59"
+                    events_result = await calendar.get_events(start, end)
+                else:
+                    events_result = await calendar.get_today_events()
+                free_result = await calendar.get_free_busy(date)
+                overdue_result = await calendar.get_overdue()
+                events = events_result.get("events", [])
+                free_slots = free_result.get("free", [])
+                overdue = overdue_result.get("events", [])
+                total_busy_minutes = 0
+                for e in events:
+                    if not e.get("isAllDay"):
+                        try:
+                            s = datetime.fromisoformat(e["start"].replace("Z", "+00:00"))
+                            en = datetime.fromisoformat(e["end"].replace("Z", "+00:00"))
+                            total_busy_minutes += int((en - s).total_seconds() / 60)
+                        except Exception:
+                            pass
+                return {
+                    "events_count": len(events),
+                    "events": events,
+                    "free_slots": free_slots,
+                    "free_slots_count": len(free_slots),
+                    "busy_minutes": total_busy_minutes,
+                    "busy_hours": round(total_busy_minutes / 60, 1),
+                    "overdue_count": len(overdue),
+                    "overdue": overdue[:5],
+                }
+            elif name == "suggest_reschedule":
+                overdue_result = await calendar.get_overdue()
+                overdue = overdue_result.get("events", [])
+                target_date = args.get("target_date")
+                free_result = await calendar.get_free_busy(target_date)
+                free_slots = free_result.get("free", [])
+                return {
+                    "overdue_events": overdue[:10],
+                    "overdue_count": len(overdue),
+                    "free_slots": free_slots,
+                    "target_date": target_date or "today",
+                }
             elif name == "search_events":
                 return await calendar.search_events(
                     args["query"], args.get("days", 30)

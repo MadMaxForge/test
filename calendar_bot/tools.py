@@ -179,4 +179,81 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "batch_delete_events",
+            "description": "Delete multiple events at once by their IDs. Much faster than deleting one by one. Use when user asks to delete several events.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of event IDs to delete",
+                    },
+                },
+                "required": ["event_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_event",
+            "description": "Move/reschedule an event to a new date/time. Keeps the same duration unless new_end is specified.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "The event ID to move",
+                    },
+                    "new_start": {
+                        "type": "string",
+                        "description": "New start date/time in ISO format, e.g. 2026-03-20T15:00:00",
+                    },
+                    "new_end": {
+                        "type": "string",
+                        "description": "New end date/time in ISO format (optional, keeps same duration if not specified)",
+                    },
+                },
+                "required": ["event_id", "new_start"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_day_summary",
+            "description": "Get a complete summary of a day: events count, free slots, busy hours, and overdue tasks — all in one request. Use this for 'как дела с расписанием?' or 'что у меня сегодня?' type questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Date in ISO format, e.g. 2026-03-20. If not provided, uses today.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "suggest_reschedule",
+            "description": "Get overdue tasks and available free slots for rescheduling. Use when there are overdue events and you want to suggest when to reschedule them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_date": {
+                        "type": "string",
+                        "description": "Date to find free slots on, in ISO format. If not provided, uses today.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
