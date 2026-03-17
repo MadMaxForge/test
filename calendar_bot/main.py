@@ -162,6 +162,9 @@ async def handle_text(message: types.Message, text: str) -> None:
             history=history,
         )
 
+        if not response:
+            response = "Не удалось получить ответ. Попробуй ещё раз."
+
         await db.save_message(message.chat.id, "user", text)
         await db.save_message(message.chat.id, "assistant", response)
 

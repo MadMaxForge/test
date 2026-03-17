@@ -116,7 +116,7 @@ class LLMService:
                         }
                     )
             else:
-                return message.get("content", "Не удалось получить ответ.")
+                return message.get("content") or "Не удалось получить ответ."
 
         return "Слишком много шагов обработки. Попробуй сформулировать запрос проще."
 
