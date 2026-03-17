@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -10,8 +11,6 @@ from calendar_bot.database import Database
 from calendar_bot.config import Config
 
 logger = logging.getLogger(__name__)
-
-MSK = timezone(timedelta(hours=3))
 
 
 class ReminderScheduler:
@@ -26,7 +25,8 @@ class ReminderScheduler:
         self.calendar = calendar
         self.db = db
         self.send_message = send_message_func
-        self.scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        self.tz = ZoneInfo(config.timezone)
+        self.scheduler = AsyncIOScheduler(timezone=config.timezone)
 
     def start(self) -> None:
         # Check for upcoming events periodically
@@ -43,7 +43,7 @@ class ReminderScheduler:
             CronTrigger(
                 hour=self.config.daily_digest_hour,
                 minute=self.config.daily_digest_minute,
-                timezone="Europe/Moscow",
+                timezone=self.config.timezone,
             ),
             id="daily_digest",
             replace_existing=True,
@@ -52,7 +52,7 @@ class ReminderScheduler:
         # Weekly cleanup of old reminders
         self.scheduler.add_job(
             self._cleanup,
-            CronTrigger(day_of_week="mon", hour=3, minute=0, timezone="Europe/Moscow"),
+            CronTrigger(day_of_week="mon", hour=3, minute=0, timezone=self.config.timezone),
             id="cleanup",
             replace_existing=True,
         )
@@ -69,7 +69,7 @@ class ReminderScheduler:
             return
 
         try:
-            now = datetime.now(MSK)
+            now = datetime.now(self.tz)
 
             for minutes_before in self.config.reminder_before_minutes:
                 result = await self.calendar.get_upcoming(minutes=minutes_before)
@@ -87,7 +87,7 @@ class ReminderScheduler:
 
                     start_time = datetime.fromisoformat(
                         event["start"].replace("Z", "+00:00")
-                    ).astimezone(MSK)
+                    ).astimezone(self.tz)
                     time_str = start_time.strftime("%H:%M")
 
                     if event.get("isAllDay"):
@@ -122,7 +122,7 @@ class ReminderScheduler:
                 return
 
             events = result.get("events", [])
-            now = datetime.now(MSK)
+            now = datetime.now(self.tz)
             date_str = now.strftime("%d.%m.%Y")
 
             if not events:
@@ -135,10 +135,10 @@ class ReminderScheduler:
                     else:
                         start = datetime.fromisoformat(
                             event["start"].replace("Z", "+00:00")
-                        ).astimezone(MSK)
+                        ).astimezone(self.tz)
                         end = datetime.fromisoformat(
                             event["end"].replace("Z", "+00:00")
-                        ).astimezone(MSK)
+                        ).astimezone(self.tz)
                         msg += f"\n{i}. 🕐 {start.strftime('%H:%M')}-{end.strftime('%H:%M')} — <b>{event['title']}</b>"
 
                     if event.get("location"):
@@ -154,7 +154,7 @@ class ReminderScheduler:
                 for event in overdue_events[:5]:
                     end = datetime.fromisoformat(
                         event["end"].replace("Z", "+00:00")
-                    ).astimezone(MSK)
+                    ).astimezone(self.tz)
                     msg += f"\n• {event['title']} (закончилось {end.strftime('%d.%m %H:%M')})"
 
             await self.send_message(self.config.owner_chat_id, msg)

@@ -10,11 +10,11 @@ REMOTE_DIR="/opt/calendar-bot"
 
 echo "=== Deploying Calendar Bot to $SERVER_USER@$SERVER_IP ==="
 
-# Create remote directory
-ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $REMOTE_DIR"
+# Create remote directory with package structure
+ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $REMOTE_DIR/calendar_bot"
 
-# Copy bot files
-scp -r ../calendar_bot/*.py "$SERVER_USER@$SERVER_IP:$REMOTE_DIR/"
+# Copy bot files into package directory
+scp -r ../calendar_bot/*.py "$SERVER_USER@$SERVER_IP:$REMOTE_DIR/calendar_bot/"
 scp ../calendar_bot/requirements.txt "$SERVER_USER@$SERVER_IP:$REMOTE_DIR/"
 scp ../calendar_bot/.env "$SERVER_USER@$SERVER_IP:$REMOTE_DIR/.env" 2>/dev/null || echo "No .env file found, will need to create on server"
 

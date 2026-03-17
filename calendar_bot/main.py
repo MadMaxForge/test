@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -20,9 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MSK = timezone(timedelta(hours=3))
-
 config = Config.from_env()
+TZ = ZoneInfo(config.timezone)
 bot = Bot(token=config.telegram_token)
 dp = Dispatcher()
 db = Database(config.db_path)
@@ -146,7 +146,7 @@ async def handle_text(message: types.Message, text: str) -> None:
 
     try:
         history = await db.get_history(message.chat.id, limit=6)
-        now = datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S (МСК)")
+        now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S (%Z)")
 
         response = await llm.process_message(
             user_message=text,
