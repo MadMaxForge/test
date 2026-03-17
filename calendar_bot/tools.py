@@ -256,4 +256,164 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_event_color",
+            "description": "Set the color/category of an event. Categories: urgent (red), meeting (blue), done (green), in_progress (yellow), learning (purple), personal (gray), health (sage green), work (lavender). Use category name OR color ID (1-11).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "The event ID to color",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category name: urgent, meeting, done, in_progress, learning, personal, health, work",
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": "Color ID (1-11). Use category instead when possible.",
+                    },
+                },
+                "required": ["event_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clone_event",
+            "description": "Duplicate an existing event to a new date, keeping the same time, duration, and details. Use for 'copy this event to Wednesday' type requests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "The event ID to clone",
+                    },
+                    "new_date": {
+                        "type": "string",
+                        "description": "Target date in ISO format, e.g. 2026-03-20",
+                    },
+                },
+                "required": ["event_id", "new_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_week_stats",
+            "description": "Get statistics for the current week: total events, busy hours by category, completed vs overdue counts. Use for 'how was my week?' or 'weekly stats' type questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_recurring_event",
+            "description": "Create a repeating event (daily, weekly, or monthly). Use for 'every Tuesday at 10:00' or 'daily standup' type requests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Event title",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "Start date/time of FIRST occurrence in ISO format",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End date/time of first occurrence (optional, defaults to 1h after start)",
+                    },
+                    "frequency": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly"],
+                        "description": "How often the event repeats",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of occurrences (optional, infinite if not set)",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Event description (optional)",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category for auto-coloring: urgent, meeting, work, personal, health, learning",
+                    },
+                },
+                "required": ["title", "start", "frequency"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_common_free_time",
+            "description": "Find the nearest free time slot of a given duration within the next N days. Use for 'when do I have 2 free hours this week?' type questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "Required free time duration in minutes",
+                    },
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": "How many days ahead to search (default 7)",
+                        "default": 7,
+                    },
+                },
+                "required": ["duration_minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mark_event_done",
+            "description": "Mark an event/task as completed. Sets green color and adds 'Done:' prefix. Use when user says a task is finished.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "The event ID to mark as done",
+                    },
+                },
+                "required": ["event_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_completed_events",
+            "description": "Get list of completed (done) events. Events marked with green color or 'Done:' prefix. Use for 'what have I completed?' type questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Start date in ISO format (default: 7 days ago)",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End date in ISO format (default: now)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]

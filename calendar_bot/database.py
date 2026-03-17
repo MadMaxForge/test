@@ -1,3 +1,4 @@
+import json
 import aiosqlite
 from datetime import datetime
 
@@ -30,6 +31,18 @@ class Database:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS event_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                typical_start_hour INTEGER,
+                typical_duration_minutes INTEGER,
+                category TEXT,
+                color TEXT,
+                use_count INTEGER DEFAULT 1,
+                last_used TEXT DEFAULT (datetime('now'))
             )
         """)
         await self.db.commit()
@@ -106,3 +119,47 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+
+    async def track_event_template(
+        self, title: str, start_hour: int | None = None,
+        duration_minutes: int | None = None, category: str | None = None,
+        color: str | None = None,
+    ) -> None:
+        assert self.db is not None
+        # Check if similar template exists
+        cursor = await self.db.execute(
+            "SELECT id, use_count FROM event_templates WHERE title = ?",
+            (title,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            await self.db.execute(
+                "UPDATE event_templates SET use_count = use_count + 1, last_used = datetime('now') WHERE id = ?",
+                (row[0],),
+            )
+        else:
+            await self.db.execute(
+                "INSERT INTO event_templates (title, typical_start_hour, typical_duration_minutes, category, color) VALUES (?, ?, ?, ?, ?)",
+                (title, start_hour, duration_minutes, category, color),
+            )
+        await self.db.commit()
+
+    async def get_frequent_templates(self, min_count: int = 2, limit: int = 5) -> list[dict]:
+        assert self.db is not None
+        cursor = await self.db.execute(
+            "SELECT title, typical_start_hour, typical_duration_minutes, category, color, use_count "
+            "FROM event_templates WHERE use_count >= ? ORDER BY use_count DESC LIMIT ?",
+            (min_count, limit),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "title": r[0],
+                "typical_start_hour": r[1],
+                "typical_duration_minutes": r[2],
+                "category": r[3],
+                "color": r[4],
+                "use_count": r[5],
+            }
+            for r in rows
+        ]

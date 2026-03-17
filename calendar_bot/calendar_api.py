@@ -118,3 +118,60 @@ class CalendarAPI:
         if date:
             params["date"] = date
         return await self._get("getFreeBusy", **params)
+
+    async def set_event_color(
+        self, event_id: str, color: str | None = None, category: str | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"eventId": event_id}
+        if color:
+            data["color"] = color
+        if category:
+            data["category"] = category
+        return await self._post("setEventColor", data)
+
+    async def clone_event(self, event_id: str, new_date: str) -> dict[str, Any]:
+        return await self._post("cloneEvent", {"eventId": event_id, "newDate": new_date})
+
+    async def create_recurring_event(
+        self,
+        title: str,
+        start: str,
+        end: str | None = None,
+        frequency: str = "weekly",
+        count: int | None = None,
+        description: str | None = None,
+        location: str | None = None,
+        color: str | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "title": title,
+            "start": start,
+            "frequency": frequency,
+        }
+        if end:
+            data["end"] = end
+        if count:
+            data["count"] = count
+        if description:
+            data["description"] = description
+        if location:
+            data["location"] = location
+        if color:
+            data["color"] = color
+        if category:
+            data["category"] = category
+        return await self._post("createRecurringEvent", data)
+
+    async def mark_event_done(self, event_id: str) -> dict[str, Any]:
+        return await self._post("markEventDone", {"eventId": event_id})
+
+    async def get_completed_events(
+        self, start: str | None = None, end: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {}
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+        return await self._get("getCompletedEvents", **params)

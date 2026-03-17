@@ -3,6 +3,18 @@
 
 var SECRET_TOKEN = 'CHANGE_ME_TO_RANDOM_STRING'; // Security token to prevent unauthorized access
 
+// Color map for categories
+var COLOR_MAP = {
+  'urgent': '11',      // Red - urgent/deadlines
+  'meeting': '9',      // Blue - meetings
+  'done': '10',        // Green - completed
+  'in_progress': '5',  // Yellow - in progress
+  'learning': '3',     // Purple - learning
+  'personal': '8',     // Gray - personal/rest
+  'health': '2',       // Green (sage) - health
+  'work': '1',         // Lavender - work
+};
+
 function doGet(e) {
   return handleRequest(e);
 }
@@ -12,7 +24,6 @@ function doPost(e) {
 }
 
 function handleRequest(e) {
-  // Check security token
   if (e.parameter.token !== SECRET_TOKEN) {
     return jsonResponse({error: 'Unauthorized'});
   }
@@ -41,6 +52,10 @@ function handleRequest(e) {
         var data = JSON.parse(e.postData.contents);
         result = createEvent(data);
         break;
+      case 'createRecurringEvent':
+        var data = JSON.parse(e.postData.contents);
+        result = createRecurringEvent(data);
+        break;
       case 'updateEvent':
         var data = JSON.parse(e.postData.contents);
         result = updateEvent(data);
@@ -57,6 +72,21 @@ function handleRequest(e) {
         break;
       case 'getOverdue':
         result = getOverdueEvents();
+        break;
+      case 'setEventColor':
+        var data = JSON.parse(e.postData.contents);
+        result = setEventColor(data);
+        break;
+      case 'cloneEvent':
+        var data = JSON.parse(e.postData.contents);
+        result = cloneEvent(data);
+        break;
+      case 'markEventDone':
+        var data = JSON.parse(e.postData.contents);
+        result = markEventDone(data);
+        break;
+      case 'getCompletedEvents':
+        result = getCompletedEvents(e.parameter.start, e.parameter.end);
         break;
       default:
         result = {error: 'Unknown action: ' + action};
@@ -119,15 +149,14 @@ function getUpcomingEvents(minutes) {
 }
 
 function getOverdueEvents() {
-  // Get events from the past 7 days that might be "tasks" (all-day events or events with specific keywords)
   var calendar = CalendarApp.getDefaultCalendar();
   var now = new Date();
   var weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   var events = calendar.getEvents(weekAgo, now);
 
   var overdue = events.filter(function(e) {
-    // Consider past events as potentially overdue
-    return e.getEndTime() < now;
+    // Past events that are NOT marked done (green/10)
+    return e.getEndTime() < now && e.getColor() !== '10' && e.getTitle().indexOf('Done:') !== 0;
   });
 
   return {events: overdue.map(formatEvent)};
@@ -144,20 +173,62 @@ function createEvent(data) {
       event = calendar.createAllDayEvent(data.title, new Date(data.start));
     }
   } else {
-    var endTime = data.end || new Date(new Date(data.start).getTime() + 60 * 60 * 1000).toISOString(); // Default 1 hour
+    var endTime = data.end || new Date(new Date(data.start).getTime() + 60 * 60 * 1000).toISOString();
     event = calendar.createEvent(data.title, new Date(data.start), new Date(endTime));
   }
 
   if (data.description) event.setDescription(data.description);
   if (data.location) event.setLocation(data.location);
 
-  // Add reminders
+  // Set color based on category or explicit color
+  if (data.color) {
+    event.setColor(data.color);
+  } else if (data.category && COLOR_MAP[data.category]) {
+    event.setColor(COLOR_MAP[data.category]);
+  }
+
   if (data.reminderMinutes) {
     event.removeAllReminders();
     event.addPopupReminder(data.reminderMinutes);
   }
 
   return {success: true, event: formatEvent(event)};
+}
+
+function createRecurringEvent(data) {
+  var calendar = CalendarApp.getDefaultCalendar();
+
+  var startTime = new Date(data.start);
+  var endTime = data.end ? new Date(data.end) : new Date(startTime.getTime() + 60 * 60 * 1000);
+
+  var freq = (data.frequency || 'weekly').toLowerCase();
+  var rule;
+
+  if (freq === 'daily') {
+    rule = CalendarApp.newRecurrence().addDailyRule();
+  } else if (freq === 'weekly') {
+    rule = CalendarApp.newRecurrence().addWeeklyRule();
+  } else if (freq === 'monthly') {
+    rule = CalendarApp.newRecurrence().addMonthlyRule();
+  } else {
+    rule = CalendarApp.newRecurrence().addWeeklyRule();
+  }
+
+  if (data.count) {
+    // Recreate with count
+    if (freq === 'daily') rule = CalendarApp.newRecurrence().addDailyRule().times(data.count);
+    else if (freq === 'monthly') rule = CalendarApp.newRecurrence().addMonthlyRule().times(data.count);
+    else rule = CalendarApp.newRecurrence().addWeeklyRule().times(data.count);
+  }
+
+  var event = calendar.createEventSeries(data.title, startTime, endTime, rule);
+
+  if (data.description) event.setDescription(data.description);
+  if (data.location) event.setLocation(data.location);
+  if (data.color) event.setColor(data.color);
+  else if (data.category && COLOR_MAP[data.category]) event.setColor(COLOR_MAP[data.category]);
+
+  return {success: true, title: data.title, frequency: freq, start: startTime.toISOString()};
 }
 
 function updateEvent(data) {
@@ -170,7 +241,6 @@ function updateEvent(data) {
   if (data.start && data.end) {
     event.setTime(new Date(data.start), new Date(data.end));
   } else if (data.start) {
-    // Move event keeping same duration
     var duration = event.getEndTime().getTime() - event.getStartTime().getTime();
     var newStart = new Date(data.start);
     var newEnd = new Date(newStart.getTime() + duration);
@@ -178,6 +248,7 @@ function updateEvent(data) {
   }
   if (data.description) event.setDescription(data.description);
   if (data.location) event.setLocation(data.location);
+  if (data.color) event.setColor(data.color);
 
   return {success: true, event: formatEvent(event)};
 }
@@ -191,6 +262,79 @@ function deleteEvent(data) {
   var title = event.getTitle();
   event.deleteEvent();
   return {success: true, deleted: title};
+}
+
+function setEventColor(data) {
+  var calendar = CalendarApp.getDefaultCalendar();
+  var event = calendar.getEventById(data.eventId);
+
+  if (!event) return {error: 'Event not found with ID: ' + data.eventId};
+
+  var colorId = data.color;
+  if (data.category && COLOR_MAP[data.category]) {
+    colorId = COLOR_MAP[data.category];
+  }
+
+  event.setColor(colorId);
+  return {success: true, event: formatEvent(event), colorSet: colorId};
+}
+
+function cloneEvent(data) {
+  var calendar = CalendarApp.getDefaultCalendar();
+  var event = calendar.getEventById(data.eventId);
+
+  if (!event) return {error: 'Event not found with ID: ' + data.eventId};
+
+  var newDate = new Date(data.newDate);
+  var originalStart = event.getStartTime();
+  var originalEnd = event.getEndTime();
+  var duration = originalEnd.getTime() - originalStart.getTime();
+
+  var newStart = new Date(newDate.getFullYear(), newDate.getMonth(), newDate.getDate(),
+                          originalStart.getHours(), originalStart.getMinutes());
+  var newEnd = new Date(newStart.getTime() + duration);
+
+  var newEvent;
+  if (event.isAllDayEvent()) {
+    newEvent = calendar.createAllDayEvent(event.getTitle(), newStart);
+  } else {
+    newEvent = calendar.createEvent(event.getTitle(), newStart, newEnd);
+  }
+
+  if (event.getDescription()) newEvent.setDescription(event.getDescription());
+  if (event.getLocation()) newEvent.setLocation(event.getLocation());
+  if (event.getColor()) newEvent.setColor(event.getColor());
+
+  return {success: true, original: formatEvent(event), clone: formatEvent(newEvent)};
+}
+
+function markEventDone(data) {
+  var calendar = CalendarApp.getDefaultCalendar();
+  var event = calendar.getEventById(data.eventId);
+
+  if (!event) return {error: 'Event not found with ID: ' + data.eventId};
+
+  event.setColor('10');
+  var title = event.getTitle();
+  if (title.indexOf('Done:') !== 0) {
+    event.setTitle('Done: ' + title);
+  }
+
+  return {success: true, event: formatEvent(event)};
+}
+
+function getCompletedEvents(startStr, endStr) {
+  var calendar = CalendarApp.getDefaultCalendar();
+  var now = new Date();
+  var start = startStr ? new Date(startStr) : new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  var end = endStr ? new Date(endStr) : now;
+  var events = calendar.getEvents(start, end);
+
+  var completed = events.filter(function(e) {
+    return e.getColor() === '10' || e.getTitle().indexOf('Done:') === 0;
+  });
+
+  return {events: completed.map(formatEvent), count: completed.length};
 }
 
 function searchEvents(query, days) {
@@ -216,7 +360,6 @@ function getFreeBusy(dateStr) {
     };
   });
 
-  // Calculate free slots
   var free = [];
   var lastEnd = start;
 
@@ -253,6 +396,7 @@ function formatEvent(event) {
     description: event.getDescription() || '',
     location: event.getLocation() || '',
     isAllDay: event.isAllDayEvent(),
-    color: event.getColor()
+    color: event.getColor(),
+    isDone: event.getColor() === '10' || event.getTitle().indexOf('Done:') === 0
   };
 }
