@@ -107,6 +107,23 @@ function jsonResponse(data) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// ---- Timezone Helper ----
+// If a datetime string has no timezone offset, assume Moscow time (UTC+3)
+// This prevents the bug where "09:00" gets interpreted as UTC and creates event at 12:00 MSK
+var USER_TZ_OFFSET = '+03:00'; // Moscow
+
+function ensureTimezone(dateStr) {
+  if (!dateStr) return dateStr;
+  // Already has timezone offset like +03:00 or -05:00 or Z
+  if (/[+-]\d{2}:\d{2}$/.test(dateStr) || /Z$/.test(dateStr)) return dateStr;
+  // No timezone — append Moscow offset
+  return dateStr + USER_TZ_OFFSET;
+}
+
+function parseDate(dateStr) {
+  return new Date(ensureTimezone(dateStr));
+}
+
 // ---- Calendar Functions ----
 
 function getEvents(startStr, endStr) {
@@ -172,13 +189,14 @@ function createEvent(data) {
 
   if (data.allDay) {
     if (data.endDate) {
-      event = calendar.createAllDayEvent(data.title, new Date(data.start), new Date(data.endDate));
+      event = calendar.createAllDayEvent(data.title, parseDate(data.start), parseDate(data.endDate));
     } else {
-      event = calendar.createAllDayEvent(data.title, new Date(data.start));
+      event = calendar.createAllDayEvent(data.title, parseDate(data.start));
     }
   } else {
-    var endTime = data.end || new Date(new Date(data.start).getTime() + 60 * 60 * 1000).toISOString();
-    event = calendar.createEvent(data.title, new Date(data.start), new Date(endTime));
+    var startTime = parseDate(data.start);
+    var endTime = data.end ? parseDate(data.end) : new Date(startTime.getTime() + 60 * 60 * 1000);
+    event = calendar.createEvent(data.title, startTime, endTime);
   }
 
   if (data.description) event.setDescription(data.description);
@@ -202,8 +220,8 @@ function createEvent(data) {
 function createRecurringEvent(data) {
   var calendar = CalendarApp.getDefaultCalendar();
 
-  var startTime = new Date(data.start);
-  var endTime = data.end ? new Date(data.end) : new Date(startTime.getTime() + 60 * 60 * 1000);
+  var startTime = parseDate(data.start);
+  var endTime = data.end ? parseDate(data.end) : new Date(startTime.getTime() + 60 * 60 * 1000);
 
   var freq = (data.frequency || 'weekly').toLowerCase();
   var rule;
@@ -243,10 +261,10 @@ function updateEvent(data) {
 
   if (data.title) event.setTitle(data.title);
   if (data.start && data.end) {
-    event.setTime(new Date(data.start), new Date(data.end));
+    event.setTime(parseDate(data.start), parseDate(data.end));
   } else if (data.start) {
     var duration = event.getEndTime().getTime() - event.getStartTime().getTime();
-    var newStart = new Date(data.start);
+    var newStart = parseDate(data.start);
     var newEnd = new Date(newStart.getTime() + duration);
     event.setTime(newStart, newEnd);
   }
@@ -281,7 +299,7 @@ function findEvent(calendar, eventId, title, startStr) {
       event = calendar.getEventById(baseId);
       // If we found the series, search for the specific instance by time
       if (event && startStr) {
-        var targetStart = new Date(startStr);
+        var targetStart = parseDate(startStr);
         var searchStart = new Date(targetStart.getTime() - 60000);
         var searchEnd = new Date(targetStart.getTime() + 60000);
         var candidates = calendar.getEvents(searchStart, searchEnd);
@@ -297,7 +315,7 @@ function findEvent(calendar, eventId, title, startStr) {
   
   // Fallback: search by title + start time
   if (title && startStr) {
-    var targetStart = new Date(startStr);
+    var targetStart = parseDate(startStr);
     var searchStart = new Date(targetStart.getTime() - 60000);
     var searchEnd = new Date(targetStart.getTime() + 60000);
     var candidates = calendar.getEvents(searchStart, searchEnd, {search: title});
@@ -314,7 +332,7 @@ function findEvent(calendar, eventId, title, startStr) {
 // Delete all events on a given date, optionally filtered by titles
 function deleteEventsByDate(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var date = new Date(data.date);
+  var date = parseDate(data.date);
   var start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   var end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
   var events = calendar.getEvents(start, end);
