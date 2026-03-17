@@ -119,7 +119,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "delete_event",
-            "description": "Delete an event from the calendar. Use search_events first to find the event ID.",
+            "description": "Delete an event from the calendar. ALWAYS provide title and start along with event_id for reliable deletion (especially for recurring events).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -127,8 +127,16 @@ TOOLS = [
                         "type": "string",
                         "description": "The event ID to delete",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Event title (for fallback search if ID lookup fails)",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "Event start time in ISO format (for fallback search)",
+                    },
                 },
-                "required": ["event_id"],
+                "required": ["event_id", "title", "start"],
             },
         },
     },
@@ -183,17 +191,47 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "batch_delete_events",
-            "description": "Delete multiple events at once by their IDs. Much faster than deleting one by one. Use when user asks to delete several events.",
+            "description": "Delete multiple events at once. ALWAYS provide title and start for each event along with the ID. For deleting ALL events on a date, use delete_events_by_date instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "event_ids": {
+                    "events": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of event IDs to delete",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "event_id": {"type": "string", "description": "Event ID"},
+                                "title": {"type": "string", "description": "Event title"},
+                                "start": {"type": "string", "description": "Event start time ISO"},
+                            },
+                            "required": ["event_id", "title", "start"],
+                        },
+                        "description": "List of events to delete, each with event_id, title, and start",
                     },
                 },
-                "required": ["event_ids"],
+                "required": ["events"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_events_by_date",
+            "description": "Delete all events on a specific date, optionally filtered by title. BEST tool for 'delete all events tomorrow' or 'delete these tasks for Tuesday'. More reliable than batch_delete_events for recurring events.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Date in ISO format, e.g. 2026-03-18",
+                    },
+                    "titles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of event titles to delete. If empty, deletes ALL events on that date.",
+                    },
+                },
+                "required": ["date"],
             },
         },
     },
@@ -382,7 +420,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "mark_event_done",
-            "description": "Mark an event/task as completed. Sets green color and adds 'Done:' prefix. Use when user says a task is finished.",
+            "description": "Mark an event/task as completed. Sets green color and adds 'Done:' prefix. ALWAYS provide title and start along with event_id.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -390,8 +428,16 @@ TOOLS = [
                         "type": "string",
                         "description": "The event ID to mark as done",
                     },
+                    "title": {
+                        "type": "string",
+                        "description": "Event title (for fallback search)",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "Event start time ISO (for fallback search)",
+                    },
                 },
-                "required": ["event_id"],
+                "required": ["event_id", "title", "start"],
             },
         },
     },

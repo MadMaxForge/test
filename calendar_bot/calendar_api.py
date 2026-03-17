@@ -107,8 +107,23 @@ class CalendarAPI:
             data["location"] = location
         return await self._post("updateEvent", data)
 
-    async def delete_event(self, event_id: str) -> dict[str, Any]:
-        return await self._post("deleteEvent", {"eventId": event_id})
+    async def delete_event(
+        self, event_id: str, title: str | None = None, start: str | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"eventId": event_id}
+        if title:
+            data["title"] = title
+        if start:
+            data["start"] = start
+        return await self._post("deleteEvent", data)
+
+    async def delete_events_by_date(
+        self, date: str, titles: list[str] | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"date": date}
+        if titles:
+            data["titles"] = titles
+        return await self._post("deleteEventsByDate", data)
 
     async def search_events(self, query: str, days: int = 30) -> dict[str, Any]:
         return await self._get("searchEvents", query=query, days=str(days))
@@ -120,17 +135,30 @@ class CalendarAPI:
         return await self._get("getFreeBusy", **params)
 
     async def set_event_color(
-        self, event_id: str, color: str | None = None, category: str | None = None
+        self, event_id: str, color: str | None = None, category: str | None = None,
+        title: str | None = None, start: str | None = None,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {"eventId": event_id}
         if color:
             data["color"] = color
         if category:
             data["category"] = category
+        if title:
+            data["title"] = title
+        if start:
+            data["start"] = start
         return await self._post("setEventColor", data)
 
-    async def clone_event(self, event_id: str, new_date: str) -> dict[str, Any]:
-        return await self._post("cloneEvent", {"eventId": event_id, "newDate": new_date})
+    async def clone_event(
+        self, event_id: str, new_date: str,
+        title: str | None = None, start: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"eventId": event_id, "newDate": new_date}
+        if title:
+            data["title"] = title
+        if start:
+            data["start"] = start
+        return await self._post("cloneEvent", data)
 
     async def create_recurring_event(
         self,
@@ -163,8 +191,15 @@ class CalendarAPI:
             data["category"] = category
         return await self._post("createRecurringEvent", data)
 
-    async def mark_event_done(self, event_id: str) -> dict[str, Any]:
-        return await self._post("markEventDone", {"eventId": event_id})
+    async def mark_event_done(
+        self, event_id: str, title: str | None = None, start: str | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"eventId": event_id}
+        if title:
+            data["title"] = title
+        if start:
+            data["start"] = start
+        return await self._post("markEventDone", data)
 
     async def get_completed_events(
         self, start: str | None = None, end: str | None = None

@@ -64,6 +64,10 @@ function handleRequest(e) {
         var data = JSON.parse(e.postData.contents);
         result = deleteEvent(data);
         break;
+      case 'deleteEventsByDate':
+        var data = JSON.parse(e.postData.contents);
+        result = deleteEventsByDate(data);
+        break;
       case 'searchEvents':
         result = searchEvents(e.parameter.query, parseInt(e.parameter.days) || 30);
         break;
@@ -233,7 +237,7 @@ function createRecurringEvent(data) {
 
 function updateEvent(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var event = calendar.getEventById(data.eventId);
+  var event = findEvent(calendar, data.eventId, data.title, data.start);
 
   if (!event) return {error: 'Event not found with ID: ' + data.eventId};
 
@@ -255,7 +259,7 @@ function updateEvent(data) {
 
 function deleteEvent(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var event = calendar.getEventById(data.eventId);
+  var event = findEvent(calendar, data.eventId, data.title, data.start);
 
   if (!event) return {error: 'Event not found with ID: ' + data.eventId};
 
@@ -264,9 +268,91 @@ function deleteEvent(data) {
   return {success: true, deleted: title};
 }
 
+// Robust event finder: tries getEventById first, falls back to search by title + time
+function findEvent(calendar, eventId, title, startStr) {
+  // Try direct ID lookup first
+  if (eventId) {
+    var event = calendar.getEventById(eventId);
+    if (event) return event;
+    
+    // Try stripping instance suffix (recurring events): baseId_20260318T103000Z -> baseId
+    var baseId = eventId.replace(/_\d{8}T\d{6}Z$/, '');
+    if (baseId !== eventId) {
+      event = calendar.getEventById(baseId);
+      // If we found the series, search for the specific instance by time
+      if (event && startStr) {
+        var targetStart = new Date(startStr);
+        var searchStart = new Date(targetStart.getTime() - 60000);
+        var searchEnd = new Date(targetStart.getTime() + 60000);
+        var candidates = calendar.getEvents(searchStart, searchEnd);
+        for (var i = 0; i < candidates.length; i++) {
+          if (candidates[i].getTitle() === event.getTitle() &&
+              Math.abs(candidates[i].getStartTime().getTime() - targetStart.getTime()) < 120000) {
+            return candidates[i];
+          }
+        }
+      }
+    }
+  }
+  
+  // Fallback: search by title + start time
+  if (title && startStr) {
+    var targetStart = new Date(startStr);
+    var searchStart = new Date(targetStart.getTime() - 60000);
+    var searchEnd = new Date(targetStart.getTime() + 60000);
+    var candidates = calendar.getEvents(searchStart, searchEnd, {search: title});
+    for (var i = 0; i < candidates.length; i++) {
+      if (candidates[i].getTitle() === title) {
+        return candidates[i];
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Delete all events on a given date, optionally filtered by titles
+function deleteEventsByDate(data) {
+  var calendar = CalendarApp.getDefaultCalendar();
+  var date = new Date(data.date);
+  var start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  var end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+  var events = calendar.getEvents(start, end);
+  
+  var titles = data.titles; // optional array of titles to filter
+  var deleted = [];
+  var errors = [];
+  
+  for (var i = 0; i < events.length; i++) {
+    var event = events[i];
+    var eventTitle = event.getTitle();
+    
+    // If titles filter provided, only delete matching events
+    if (titles && titles.length > 0) {
+      var match = false;
+      for (var j = 0; j < titles.length; j++) {
+        if (eventTitle === titles[j] || eventTitle.indexOf(titles[j]) !== -1) {
+          match = true;
+          break;
+        }
+      }
+      if (!match) continue;
+    }
+    
+    try {
+      event.deleteEvent();
+      deleted.push(eventTitle);
+    } catch(err) {
+      errors.push({title: eventTitle, error: err.toString()});
+    }
+  }
+  
+  return {success: true, deleted: deleted, deletedCount: deleted.length, errors: errors};
+}
+
 function setEventColor(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var event = calendar.getEventById(data.eventId);
+  var event = findEvent(calendar, data.eventId, data.title, data.start);
 
   if (!event) return {error: 'Event not found with ID: ' + data.eventId};
 
@@ -281,7 +367,7 @@ function setEventColor(data) {
 
 function cloneEvent(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var event = calendar.getEventById(data.eventId);
+  var event = findEvent(calendar, data.eventId, data.title, data.start);
 
   if (!event) return {error: 'Event not found with ID: ' + data.eventId};
 
@@ -310,7 +396,7 @@ function cloneEvent(data) {
 
 function markEventDone(data) {
   var calendar = CalendarApp.getDefaultCalendar();
-  var event = calendar.getEventById(data.eventId);
+  var event = findEvent(calendar, data.eventId, data.title, data.start);
 
   if (!event) return {error: 'Event not found with ID: ' + data.eventId};
 
