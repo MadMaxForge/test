@@ -81,7 +81,7 @@ python main.py
 ## Технологии
 
 - **OpenRouter** (Gemini 2.0 Flash) — генерация текста
-- **ElevenLabs** — озвучка для рилсов
+- **ElevenLabs** — озвучка для рилсов (голос: Kari, русский женский)
 - **Pillow** — обработка изображений
 - **FFmpeg** — сборка видео
 - **python-telegram-bot** — Telegram бот
