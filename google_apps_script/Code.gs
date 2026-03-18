@@ -116,6 +116,8 @@ function ensureTimezone(dateStr) {
   if (!dateStr) return dateStr;
   // Already has timezone offset like +03:00 or -05:00 or Z
   if (/[+-]\d{2}:\d{2}$/.test(dateStr) || /Z$/.test(dateStr)) return dateStr;
+  // Only add timezone to datetime strings (containing 'T'), not date-only strings like '2026-03-18'
+  if (dateStr.indexOf('T') === -1) return dateStr;
   // No timezone — append Moscow offset
   return dateStr + USER_TZ_OFFSET;
 }
