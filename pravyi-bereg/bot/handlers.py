@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -298,7 +299,10 @@ async def _handle_approve(query, queue_id: int):
 
     item = get_queue_item(queue_id)
     if not item:
-        await query.edit_message_caption(caption="❌ Элемент не найден")
+        try:
+            await query.edit_message_caption(caption="❌ Элемент не найден")
+        except Exception:
+            await query.edit_message_text(text="❌ Элемент не найден")
         return
 
     execute_insert(
@@ -306,9 +310,14 @@ async def _handle_approve(query, queue_id: int):
         (datetime.now().isoformat(), queue_id),
     )
 
-    await query.edit_message_caption(
-        caption=f"✅ Одобрено! #{queue_id} будет опубликован.\n\n{item['topic']}"
-    )
+    try:
+        await query.edit_message_caption(
+            caption=f"✅ Одобрено! #{queue_id} будет опубликован.\n\n{item['topic']}"
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=f"✅ Одобрено! #{queue_id} будет опубликован.\n\n{item['topic']}"
+        )
     log.info("Content #%d approved", queue_id)
 
     # Trigger immediate publish
@@ -330,9 +339,14 @@ async def _handle_reject(query, queue_id: int):
         "UPDATE content_queue SET status='rejected', rejection_reason='manual' WHERE id=?",
         (queue_id,),
     )
-    await query.edit_message_caption(
-        caption=f"❌ Отклонено. #{queue_id}\nМожете нажать 🔄 для перегенерации."
-    )
+    try:
+        await query.edit_message_caption(
+            caption=f"❌ Отклонено. #{queue_id}\nМожете нажать 🔄 для перегенерации."
+        )
+    except Exception:
+        await query.edit_message_text(
+            text=f"❌ Отклонено. #{queue_id}\nМожете нажать 🔄 для перегенерации."
+        )
     log.info("Content #%d rejected", queue_id)
 
 
@@ -421,6 +435,3 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         log.error("Media upload handling failed: %s", e)
         await message.reply_text(f"❌ Ошибка сохранения: {e}")
-
-
-import time
