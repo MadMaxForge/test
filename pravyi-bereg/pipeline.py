@@ -1,6 +1,7 @@
 """Content pipeline: generate -> queue -> approve -> publish."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -132,7 +133,9 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     log.info("[Reel] Step 3/5: Generating lip-sync avatar (RunPod)...")
     from media.runpod_lipsync import generate_lipsync_video
 
-    lipsync_path = generate_lipsync_video(audio_path, AVATAR_IMAGE_PATH or None)
+    lipsync_path = await asyncio.to_thread(
+        generate_lipsync_video, audio_path, AVATAR_IMAGE_PATH or None
+    )
     if not lipsync_path:
         return {"error": "Lip-sync generation failed (RunPod)"}
 
