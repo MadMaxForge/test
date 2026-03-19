@@ -46,6 +46,28 @@ def strip_emojis(text: str) -> str:
     return cleaned
 
 
+def strip_markdown(text: str) -> str:
+    """Remove Markdown formatting from text for platforms that don't support it (e.g. VK).
+    
+    Strips: **bold**, *italic*, __underline__, ~~strikethrough~~, `code`,
+    and cleans up list markers like '* ' at the start of lines.
+    """
+    # Remove bold: **text** or __text__
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    # Remove italic: *text* (but not list markers)
+    text = re.sub(r'(?<!\n)(?<!^)\*(.+?)\*', r'\1', text)
+    # Remove strikethrough: ~~text~~
+    text = re.sub(r'~~(.+?)~~', r'\1', text)
+    # Remove inline code: `text`
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    # Clean list markers: '* item' -> '- item' or just 'item'
+    text = re.sub(r'^\* ', '\u2022 ', text, flags=re.MULTILINE)
+    # Remove heading markers: ### heading -> heading
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    return text
+
+
 SYSTEM_PROMPT = f"""Ты — копирайтер для VK-сообщества "{BRAND_NAME}".
 Направление: недвижимость, земельные участки, загородные дома.
 Регион: {BRAND_REGION}.
@@ -127,6 +149,8 @@ async def generate_post(topic: str, context: str = "") -> dict[str, Any]:
 - Используй эмодзи умеренно (2-4 штуки, в заголовке и ключевых местах)
 - Без конкретных цен
 - Закончи мягким CTA
+- НЕ используй Markdown-форматирование (без **, *, ##, ~~). VK не поддерживает Markdown. Пиши обычным текстом.
+- Для списков используй символ \u2022 или тире \u2013, но НЕ звёздочку *
 
 Формат ответа — только текст поста, ничего больше."""
 
@@ -144,6 +168,9 @@ async def generate_post(topic: str, context: str = "") -> dict[str, Any]:
         cut_point = text[:MAX_POST_LENGTH].rfind("\n\n")
         if cut_point > MIN_POST_LENGTH:
             text = text[:cut_point]
+
+    # Strip any markdown formatting that AI may have added
+    text = strip_markdown(text)
 
     content_hash = hashlib.md5(text.strip().lower().encode()).hexdigest()
     hook = text.split("\n")[0].strip()[:100]
