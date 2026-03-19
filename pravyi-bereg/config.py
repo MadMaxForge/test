@@ -60,7 +60,7 @@ MAX_POST_LENGTH = 2000
 MIN_POST_LENGTH = 400
 MAX_REEL_SCRIPT_LENGTH = 500
 HASHTAGS_COUNT = 5
-REEL_TARGET_WORDS = (60, 100)  # min/max words for ~30s reel narration
+REEL_TARGET_WORDS = (45, 65)  # min/max words for ~20-25s reel narration (faster lip-sync)
 REEL_AUDIO_BUFFER = 0.5  # seconds to add after last word for smooth ending
 
 # Brand colors (emerald green theme)

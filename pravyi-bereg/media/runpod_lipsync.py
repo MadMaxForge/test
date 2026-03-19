@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # RunPod API settings
 RUNPOD_BASE_URL = "https://api.runpod.ai/v2"
 POLL_INTERVAL = 15  # seconds between status checks
-MAX_WAIT = 900  # 15 minutes max wait
+MAX_WAIT = 1800  # 30 minutes max wait
 
 
 def _build_workflow(image_name: str, audio_name: str) -> dict:
