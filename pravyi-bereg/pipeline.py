@@ -1,4 +1,4 @@
-"""Content pipeline: generate → queue → approve → publish."""
+"""Content pipeline: generate -> queue -> approve -> publish."""
 from __future__ import annotations
 
 import logging
@@ -21,15 +21,14 @@ async def generate_and_queue_post(
     force_topic: str | None = None,
 ) -> dict | None:
     """Generate content and add to approval queue.
-    
+
     Args:
         post_type: 'post' or 'reel'
         force_topic: Override automatic topic selection
-        
+
     Returns:
-        {'queue_id': int, 'topic': str, 'cover_path': str} or {'error': str}
+        {'queue_id': int, 'topic': str, ...} or {'error': str}
     """
-    # 1. Select topic
     if force_topic:
         topic = force_topic
         category = "manual"
@@ -37,9 +36,9 @@ async def generate_and_queue_post(
         topic_info = get_next_topic(post_type)
         topic = topic_info["topic"]
         category = topic_info["category"]
-    
+
     log.info("Generating %s on topic: %s", post_type, topic)
-    
+
     if post_type == "post":
         return await _generate_post_pipeline(topic, category)
     elif post_type == "reel":
@@ -54,21 +53,20 @@ async def _generate_post_pipeline(topic: str, category: str) -> dict:
     result = await generate_post(topic)
     if "error" in result:
         return result
-    
+
     text = result["text"]
     content_hash = result["content_hash"]
     hook = result["hook"]
-    
+
     # 2. Validate
     validation = validate_post(text)
     if not validation["passed"]:
         log.warning("Post validation issues: %s", validation["issues"])
-        # Try to fix by regenerating (don't block - just log warning)
-    
-    # 3. Generate photo cover
+
+    # 3. Generate photo cover with emerald theme
     photo_path = get_least_used_photo()
     cover_path = None
-    
+
     if photo_path:
         title = await generate_post_title(topic)
         try:
@@ -76,23 +74,23 @@ async def _generate_post_pipeline(topic: str, category: str) -> dict:
             log.info("Cover created: %s", cover_path)
         except Exception as e:
             log.error("Cover creation failed: %s", e)
-    
+
     # 4. Add to queue
     queue_id = execute_insert(
-        """INSERT INTO content_queue 
-           (post_type, topic, format, hook, text_content, content_hash, 
+        """INSERT INTO content_queue
+           (post_type, topic, format, hook, text_content, content_hash,
             media_ids, status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
         ("post", topic, category, hook, text, content_hash,
          cover_path or "", datetime.now().isoformat()),
     )
-    
+
     # 5. Record media usage
     if photo_path:
         record_media_usage(photo_path, queue_id)
-    
+
     log.info("Post queued: #%d topic=%s", queue_id, topic)
-    
+
     return {
         "queue_id": queue_id,
         "topic": topic,
@@ -103,59 +101,74 @@ async def _generate_post_pipeline(topic: str, category: str) -> dict:
 
 
 async def _generate_reel_pipeline(topic: str, category: str) -> dict:
-    """Pipeline for video reel with TTS."""
-    from config import SOURCE_VIDEOS
-    
-    # Check if we have source videos
+    """Full pipeline for video reel: script -> TTS -> lip-sync -> composite video."""
+    from config import SOURCE_VIDEOS, AVATAR_IMAGE_PATH
+
+    # Check prerequisites
     videos = list(SOURCE_VIDEOS.glob("*.mp4")) + list(SOURCE_VIDEOS.glob("*.mov"))
     if not videos:
-        log.warning("No source videos available for reel, falling back to post")
         return {"error": "No source videos available. Upload videos via TG bot first."}
-    
-    # 1. Generate reel script
+
+    # 1. Generate reel script (AI)
+    log.info("[Reel] Step 1/5: Generating script...")
     script = await generate_reel_script(topic)
     if "error" in script:
         return script
-    
+
     voiceover_text = script["voiceover_text"]
-    scenes = script["scenes"]
-    
-    # 2. Generate TTS
-    from tts.voice import generate_tts
-    audio_path = await generate_tts(voiceover_text)
+    log.info("[Reel] Script: %d words", len(voiceover_text.split()))
+
+    # 2. Generate TTS with word-level timestamps
+    log.info("[Reel] Step 2/5: Generating TTS with timestamps...")
+    from tts.voice import generate_tts_with_timestamps
+
+    audio_path, word_timestamps = await generate_tts_with_timestamps(voiceover_text)
     if not audio_path:
         return {"error": "TTS generation failed"}
-    
-    # 3. Build video
-    from media.video_builder import select_video_fragments, build_reel, get_audio_duration
-    
-    audio_duration = get_audio_duration(audio_path)
-    fragments = select_video_fragments(audio_duration, scenes)
-    
-    if not fragments:
-        return {"error": "No video fragments could be selected"}
-    
-    video_path = build_reel(
-        audio_path=audio_path,
-        fragments=fragments,
-        subtitle_text=voiceover_text,
+
+    log.info("[Reel] TTS: %s, %d word timestamps", audio_path, len(word_timestamps))
+
+    # 3. Generate lip-sync avatar video via RunPod
+    log.info("[Reel] Step 3/5: Generating lip-sync avatar (RunPod)...")
+    from media.runpod_lipsync import generate_lipsync_video
+
+    lipsync_path = generate_lipsync_video(audio_path, AVATAR_IMAGE_PATH or None)
+    if not lipsync_path:
+        return {"error": "Lip-sync generation failed (RunPod)"}
+
+    log.info("[Reel] Lip-sync video: %s", lipsync_path)
+
+    # 4. Build composite reel (BG video + avatar + subtitles + audio)
+    log.info("[Reel] Step 4/5: Building composite video...")
+    from media.video_builder import build_composite_reel
+
+    # Use first source video as background audio source (ambient sound at 10%)
+    bg_audio_source = str(videos[0]) if videos else None
+
+    video_path = build_composite_reel(
+        tts_audio_path=audio_path,
+        lipsync_video_path=lipsync_path,
+        word_timestamps=word_timestamps,
+        bg_audio_source=bg_audio_source,
+        bg_music_volume=0.1,
     )
-    
+
     if not video_path:
         return {"error": "Video assembly failed"}
-    
-    # 4. Add to queue
+
+    # 5. Add to queue
+    log.info("[Reel] Step 5/5: Adding to approval queue...")
     queue_id = execute_insert(
-        """INSERT INTO content_queue 
-           (post_type, topic, format, hook, text_content, content_hash, 
+        """INSERT INTO content_queue
+           (post_type, topic, format, hook, text_content, content_hash,
             media_ids, status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
         ("reel", topic, category, topic[:100], voiceover_text, "",
          video_path, datetime.now().isoformat()),
     )
-    
-    log.info("Reel queued: #%d topic=%s", queue_id, topic)
-    
+
+    log.info("[Reel] Reel queued: #%d topic=%s video=%s", queue_id, topic, video_path)
+
     return {
         "queue_id": queue_id,
         "topic": topic,
@@ -167,33 +180,31 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
 
 async def publish_approved_item(queue_id: int) -> int | None:
     """Publish an approved queue item to VK.
-    
+
     Returns VK post ID or None.
     """
     from vk.api import publish_post, upload_video
-    
+
     item = get_queue_item(queue_id)
     if not item:
         log.error("Queue item #%d not found", queue_id)
         return None
-    
+
     if item["status"] != "approved":
         log.error("Queue item #%d status is %s, not approved", queue_id, item["status"])
         return None
-    
+
     post_type = item["post_type"]
     text = item["text_content"]
     media_path = item["media_ids"]  # cover_path for posts, video_path for reels
-    
+
     if post_type == "post":
         vk_post_id = await publish_post(text, photo_path=media_path if media_path else None)
     elif post_type == "reel":
-        # Upload video first, then post with attachment
         if media_path:
             attachment = await upload_video(media_path, item["topic"])
             if attachment:
-                vk_post_id = await publish_post(text, photo_path=None)
-                # TODO: attach video to post
+                vk_post_id = await publish_post(text, video_attachment=attachment)
             else:
                 vk_post_id = await publish_post(text)
         else:
@@ -201,25 +212,21 @@ async def publish_approved_item(queue_id: int) -> int | None:
     else:
         log.error("Unknown post type: %s", post_type)
         return None
-    
+
     if vk_post_id:
-        # Update queue
         execute_insert(
             "UPDATE content_queue SET status='published', published_at=? WHERE id=?",
             (datetime.now().isoformat(), queue_id),
         )
-        
-        # Record in published posts
         execute_insert(
-            """INSERT INTO published_posts 
-               (vk_post_id, post_type, topic, format, text_content, content_hash, 
+            """INSERT INTO published_posts
+               (vk_post_id, post_type, topic, format, text_content, content_hash,
                 media_ids, published_at, photo_path)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (vk_post_id, post_type, item["topic"], item["format"],
              text, item["content_hash"], media_path,
              datetime.now().isoformat(), media_path),
         )
-        
         log.info("Published #%d to VK: post_id=%d", queue_id, vk_post_id)
-    
+
     return vk_post_id

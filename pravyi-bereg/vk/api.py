@@ -93,12 +93,18 @@ async def upload_photo_to_wall(photo_path: str) -> str | None:
     return attachment
 
 
-async def publish_post(text: str, photo_path: str | None = None, publish_date: int | None = None) -> int | None:
+async def publish_post(
+    text: str,
+    photo_path: str | None = None,
+    video_attachment: str | None = None,
+    publish_date: int | None = None,
+) -> int | None:
     """Publish a post to VK community wall.
     
     Args:
         text: Post text
         photo_path: Optional path to cover image
+        video_attachment: Optional pre-uploaded video attachment string (e.g. 'video-123_456')
         publish_date: Optional Unix timestamp for scheduled post
         
     Returns:
@@ -110,11 +116,20 @@ async def publish_post(text: str, photo_path: str | None = None, publish_date: i
         "message": text,
     }
     
+    attachments = []
+    
     # Upload photo if provided
     if photo_path and Path(photo_path).exists():
-        attachment = await upload_photo_to_wall(photo_path)
-        if attachment:
-            params["attachments"] = attachment
+        photo_att = await upload_photo_to_wall(photo_path)
+        if photo_att:
+            attachments.append(photo_att)
+    
+    # Add video attachment if provided
+    if video_attachment:
+        attachments.append(video_attachment)
+    
+    if attachments:
+        params["attachments"] = ",".join(attachments)
     
     # Schedule if needed
     if publish_date:

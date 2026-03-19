@@ -35,6 +35,11 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs")  # elevenlabs or edge-tts
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "ru-RU-DmitryNeural")
 
+# RunPod (InfiniteTalk lip-sync)
+RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
+RUNPOD_ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID", "")
+AVATAR_IMAGE_PATH = os.getenv("AVATAR_IMAGE_PATH", "")  # Path to avatar PNG for lip-sync
+
 # Telegram
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_OWNER_CHAT_ID = int(os.getenv("TG_OWNER_CHAT_ID", "0"))
@@ -55,6 +60,13 @@ MAX_POST_LENGTH = 2000
 MIN_POST_LENGTH = 400
 MAX_REEL_SCRIPT_LENGTH = 500
 HASHTAGS_COUNT = 5
+REEL_TARGET_WORDS = (60, 100)  # min/max words for ~30s reel narration
+REEL_AUDIO_BUFFER = 0.5  # seconds to add after last word for smooth ending
+
+# Brand colors (emerald green theme)
+BRAND_COLOR_PRIMARY = (0, 128, 85)  # Emerald green
+BRAND_COLOR_DARK = (0, 77, 51)  # Dark emerald
+BRAND_COLOR_ACCENT = (0, 179, 119)  # Light emerald
 
 
 def ensure_dirs():
@@ -79,4 +91,10 @@ def validate_config() -> list[str]:
         warnings.append("TG_OWNER_CHAT_ID not set")
     if TTS_PROVIDER == "elevenlabs" and not ELEVENLABS_API_KEY:
         warnings.append("ELEVENLABS_API_KEY not set (TTS_PROVIDER=elevenlabs)")
+    if not RUNPOD_API_KEY:
+        warnings.append("RUNPOD_API_KEY not set (needed for lip-sync reels)")
+    if not RUNPOD_ENDPOINT_ID:
+        warnings.append("RUNPOD_ENDPOINT_ID not set")
+    if not AVATAR_IMAGE_PATH:
+        warnings.append("AVATAR_IMAGE_PATH not set (needed for lip-sync)")
     return warnings

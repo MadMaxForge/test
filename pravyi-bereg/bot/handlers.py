@@ -171,24 +171,52 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /generate command - manually trigger content generation."""
+    """Handle /generate command - manually trigger content generation.
+
+    Usage:
+        /generate       — generate both a post and a reel
+        /generate post  — generate only a post
+        /generate reel  — generate only a reel
+    """
     if not _is_owner(update.effective_user.id):
         return
 
-    await update.message.reply_text("⏳ Генерирую новый пост...")
+    args = context.args
+    if args and args[0].lower() in ("post", "reel"):
+        types_to_generate = [args[0].lower()]
+    else:
+        # Default: generate both post and reel
+        types_to_generate = ["post", "reel"]
 
-    try:
-        # Import here to avoid circular imports
-        from pipeline import generate_and_queue_post
-        result = await generate_and_queue_post(post_type="post")
-        if result and "error" not in result:
-            await update.message.reply_text(f"✅ Пост #{result['queue_id']} создан и ожидает проверки.")
-        else:
-            error = result.get("error", "Unknown error") if result else "Generation failed"
-            await update.message.reply_text(f"❌ Ошибка: {error}")
-    except Exception as e:
-        log.error("Manual generation failed: %s", e)
-        await update.message.reply_text(f"❌ Ошибка генерации: {e}")
+    for post_type in types_to_generate:
+        type_label = "📝 пост" if post_type == "post" else "🎬 рилс"
+        msg = await update.message.reply_text(f"⏳ Генерирую {type_label}...")
+
+        try:
+            from pipeline import generate_and_queue_post
+            result = await generate_and_queue_post(post_type=post_type)
+
+            if result and "error" not in result:
+                queue_id = result["queue_id"]
+                await msg.edit_text(f"✅ {type_label.capitalize()} #{queue_id} создан. Отправляю на проверку...")
+
+                # Send for approval
+                from bot.handlers import send_for_approval
+                await send_for_approval(
+                    bot=context.bot,
+                    queue_id=queue_id,
+                    post_type=post_type,
+                    topic=result["topic"],
+                    text=result["text"],
+                    cover_path=result.get("cover_path"),
+                    video_path=result.get("video_path"),
+                )
+            else:
+                error = result.get("error", "Unknown error") if result else "Generation failed"
+                await msg.edit_text(f"❌ Ошибка {type_label}: {error}")
+        except Exception as e:
+            log.error("Manual generation of %s failed: %s", post_type, e, exc_info=True)
+            await msg.edit_text(f"❌ Ошибка генерации {type_label}: {e}")
 
 
 async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
