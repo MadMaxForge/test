@@ -289,7 +289,8 @@ async def cmd_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ Ошибка {type_label}: {error}")
         except Exception as e:
             log.error("Manual generation of %s failed: %s", post_type, e, exc_info=True)
-            await msg.edit_text(f"❌ Ошибка генерации {type_label}: {e}")
+            error_detail = _classify_error(str(e))
+            await msg.edit_text(f"❌ Ошибка {type_label}:\n{error_detail}")
 
 
 async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -313,6 +314,58 @@ async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"  • [{row['category']}] {row['topic'][:50]}")
     
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /schedule command - show publishing schedule and next runs."""
+    if not _is_owner(update.effective_user.id):
+        return
+
+    from scheduler import list_scheduled_jobs
+
+    jobs = list_scheduled_jobs()
+
+    lines = ["📅 *Расписание публикаций:*\n"]
+
+    lines.append("*Регулярное (MSK):*")
+    lines.append("📝 Вт 19:00 — пост (ген. 17:00)")
+    lines.append("🎬 Чт 19:00 — рилс (ген. 17:00)")
+    lines.append("📝 Сб 10:00 — пост (ген. 08:00)")
+    lines.append("🎬 Вс 10:00 — рилс (ген. 08:00)")
+    lines.append("🔍 Пн 06:00 — парсинг конкурентов\n")
+
+    if jobs:
+        lines.append("*Ближайшие запуски:*")
+        for job in sorted(jobs, key=lambda j: j["next_run"]):
+            lines.append(f"  ⏰ {job['name']}: {job['next_run']}")
+    else:
+        lines.append("⚠️ Планировщик не активен")
+
+    lines.append("\n💡 *Вне расписания:*")
+    lines.append("Нажмите \"📝 Пост\" или \"🎬 Рилс\" в меню")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=MAIN_MENU)
+
+
+async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle persistent menu button presses."""
+    if not _is_owner(update.effective_user.id):
+        return
+
+    text = update.message.text.strip()
+
+    if "Пост" in text and "Рилс" not in text:
+        context.args = ["post"]
+        await cmd_generate(update, context)
+    elif "Рилс" in text:
+        context.args = ["reel"]
+        await cmd_generate(update, context)
+    elif "Расписание" in text:
+        await cmd_schedule(update, context)
+    elif "Статус" in text:
+        await cmd_status(update, context)
+    elif "Помощь" in text:
+        await cmd_help(update, context)
 
 
 async def send_for_approval(
@@ -383,7 +436,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith(APPROVE_PREFIX):
         queue_id = int(data[len(APPROVE_PREFIX):])
-        await _handle_approve(query, queue_id)
+        await _handle_approve(query, queue_id, context)
 
     elif data.startswith(REJECT_PREFIX):
         queue_id = int(data[len(REJECT_PREFIX):])
@@ -394,7 +447,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_regenerate(query, queue_id, context)
 
 
-async def _handle_approve(query, queue_id: int):
+async def _handle_approve(query, queue_id: int, context=None):
     """Approve content for publishing."""
     from datetime import datetime
 
@@ -430,8 +483,9 @@ async def _handle_approve(query, queue_id: int):
         else:
             await query.message.reply_text("⏳ Будет опубликовано по расписанию.")
     except Exception as e:
-        log.error("Immediate publish failed: %s", e)
-        await query.message.reply_text("⏳ Будет опубликовано по расписанию.")
+        log.error("Immediate publish failed: %s", e, exc_info=True)
+        error_detail = _classify_error(str(e))
+        await query.message.reply_text(f"❌ Ошибка публикации:\n{error_detail}")
 
 
 async def _handle_reject(query, queue_id: int):
