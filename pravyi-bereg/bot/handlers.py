@@ -512,33 +512,52 @@ async def send_for_approval(
 
     type_label = "\U0001f4dd \u041f\u041e\u0421\u0422" if post_type == "post" else "\U0001f3ac \u0420\u0418\u041b\u0421"
 
-    caption = (
+    header = (
         f"{type_label} #{queue_id}\n"
         f"\U0001f4cc \u0422\u0435\u043c\u0430: {topic}\n\n"
-        f"{text[:800]}{'...' if len(text) > 800 else ''}"
     )
+
+    # For media messages, Telegram limits caption to 1024 chars.
+    # Build a smart caption: header + as much text as fits + truncation note.
+    full_text_len = len(text)
+    truncation_note = f"\n\n\U0001f4c4 _\u041f\u043e\u043b\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442: {full_text_len} \u0441\u0438\u043c\u0432. \u0412 VK \u043e\u043f\u0443\u0431\u043b\u0438\u043a\u0443\u0435\u0442\u0441\u044f \u0446\u0435\u043b\u0438\u043a\u043e\u043c._"
+    media_limit = 1024
+    text_limit = 4096
+
+    def _build_caption(limit: int) -> str:
+        available = limit - len(header) - len(truncation_note) - 5
+        if len(text) <= limit - len(header) - 5:
+            # Fits fully
+            return header + text
+        else:
+            return header + text[:available] + "..." + truncation_note
 
     try:
         if cover_path and Path(cover_path).exists():
+            caption = _build_caption(media_limit)
             with open(cover_path, "rb") as photo:
                 await bot.send_photo(
                     chat_id=TG_OWNER_CHAT_ID,
                     photo=photo,
-                    caption=caption[:1024],
+                    caption=caption,
+                    parse_mode="Markdown",
                     reply_markup=keyboard,
                 )
         elif video_path and Path(video_path).exists():
+            caption = _build_caption(media_limit)
             with open(video_path, "rb") as video:
                 await bot.send_video(
                     chat_id=TG_OWNER_CHAT_ID,
                     video=video,
-                    caption=caption[:1024],
+                    caption=caption,
+                    parse_mode="Markdown",
                     reply_markup=keyboard,
                 )
         else:
+            caption = _build_caption(text_limit)
             await bot.send_message(
                 chat_id=TG_OWNER_CHAT_ID,
-                text=caption[:4096],
+                text=caption,
                 reply_markup=keyboard,
             )
         log.info("Content #%d sent for approval", queue_id)
