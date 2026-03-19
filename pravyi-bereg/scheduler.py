@@ -191,15 +191,81 @@ async def _scheduled_parse_competitors():
                 pass
 
 
+# Schedule config: maps job_id -> (day_of_week, gen_hour, publish_hour, post_type, label)
+SCHEDULE_CONFIG = {
+    "gen_tue_post": {"day": "tue", "gen_hour": 17, "pub_hour": 19, "type": "post", "label": "Вторник пост"},
+    "gen_thu_reel": {"day": "thu", "gen_hour": 17, "pub_hour": 19, "type": "reel", "label": "Четверг рилс"},
+    "gen_sat_post": {"day": "sat", "gen_hour": 8, "pub_hour": 10, "type": "post", "label": "Суббота пост"},
+    "gen_sun_reel": {"day": "sun", "gen_hour": 8, "pub_hour": 10, "type": "reel", "label": "Воскресенье рилс"},
+    "parse_competitors": {"day": "mon", "gen_hour": 6, "pub_hour": None, "type": "parse", "label": "Понедельник парсинг"},
+}
+
+DAY_NAMES_RU = {
+    "mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+    "fri": "Пт", "sat": "Сб", "sun": "Вс",
+}
+
+DAY_FULL_RU = {
+    "mon": "Понедельник", "tue": "Вторник", "wed": "Среда", "thu": "Четверг",
+    "fri": "Пятница", "sat": "Суббота", "sun": "Воскресенье",
+}
+
+
 def list_scheduled_jobs() -> list[dict]:
-    """List all scheduled jobs."""
+    """List all scheduled jobs with config info."""
     scheduler = get_scheduler()
     jobs = []
     for job in scheduler.get_jobs():
+        cfg = SCHEDULE_CONFIG.get(job.id, {})
         jobs.append({
             "id": job.id,
             "name": job.name,
             "next_run": str(job.next_run_time) if job.next_run_time else "—",
             "trigger": str(job.trigger),
+            "day": cfg.get("day", ""),
+            "gen_hour": cfg.get("gen_hour"),
+            "pub_hour": cfg.get("pub_hour"),
+            "type": cfg.get("type", ""),
+            "label": cfg.get("label", job.name),
         })
     return jobs
+
+
+def reschedule_job(job_id: str, new_day: str, new_hour: int) -> bool:
+    """Reschedule a job to a new day and hour.
+    
+    Args:
+        job_id: The scheduler job ID (e.g. 'gen_tue_post')
+        new_day: Day of week (mon/tue/wed/thu/fri/sat/sun)
+        new_hour: Publication hour (generation will be 2 hours before)
+    
+    Returns:
+        True if rescheduled successfully
+    """
+    scheduler = get_scheduler()
+    job = scheduler.get_job(job_id)
+    if not job:
+        return False
+    
+    cfg = SCHEDULE_CONFIG.get(job_id)
+    if not cfg:
+        return False
+    
+    # For content jobs, generation is 2h before publish
+    if cfg["type"] in ("post", "reel"):
+        gen_hour = max(0, new_hour - 2)
+    else:
+        gen_hour = new_hour
+    
+    job.reschedule(
+        CronTrigger(day_of_week=new_day, hour=gen_hour, minute=0, timezone=TIMEZONE)
+    )
+    
+    # Update config
+    cfg["day"] = new_day
+    cfg["gen_hour"] = gen_hour
+    cfg["pub_hour"] = new_hour if cfg["type"] in ("post", "reel") else None
+    cfg["label"] = f"{DAY_FULL_RU.get(new_day, new_day)} {cfg['type']}"
+    
+    log.info("Rescheduled %s to %s at %02d:00 (gen %02d:00)", job_id, new_day, new_hour, gen_hour)
+    return True
