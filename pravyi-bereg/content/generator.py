@@ -195,6 +195,39 @@ async def generate_reel_script(topic: str) -> dict[str, Any]:
     }
 
 
+async def generate_reel_caption(topic: str) -> str:
+    """Generate a short thematic CTA caption for a reel (not the voiceover text)."""
+    prompt = f"""Напиши КОРОТКУЮ подпись под видео-рилс для VK-группы "{BRAND_NAME}".
+
+Тема ролика: {topic}
+
+Требования:
+- Максимум 1 предложение (5-10 слов)
+- Это НЕ пересказ видео, а призыв/мотивация
+- Может быть: призыв подписаться, вопрос зрителю, мотивирующая фраза по теме
+- Используй 1-2 эмодзи
+- Тематически связано с недвижимостью / загородной жизнью
+
+Примеры хороших подписей:
+- Подпишись, чтобы не пропустить советы! 🏠
+- Поможем найти дом мечты 💚
+- А ты знал об этом? 🤔
+- Сохрани, чтобы не забыть! 📌
+- Напиши нам — подберём участок под тебя 🌿
+
+Ответ — ТОЛЬКО подпись, ничего больше."""
+
+    caption = await ask_ai(prompt, max_tokens=80)
+    if not caption:
+        return "Подпишись на Правый Берег! 🏡"
+
+    caption = caption.strip().strip('"').strip("'").strip("«»")
+    if len(caption) > 100:
+        caption = caption[:100]
+
+    return caption
+
+
 async def generate_post_title(topic: str) -> str:
     """Generate a short title for photo overlay (max 6 words)."""
     prompt = f"""Напиши ОЧЕНЬ короткий заголовок для картинки-обложки поста.

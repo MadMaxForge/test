@@ -119,14 +119,34 @@ def _format_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def select_background_video(duration: float) -> str | None:
-    """Select a background video from source videos and prepare it."""
+def _get_least_used_video() -> Path | None:
+    """Pick the least-recently-used source video for background rotation."""
+    from db import execute
     source_videos = list(SOURCE_VIDEOS.glob("*.mp4")) + list(SOURCE_VIDEOS.glob("*.mov"))
     if not source_videos:
+        return None
+
+    # Build usage map {file_path_str: count}
+    usage: dict[str, int] = {}
+    for row in execute("SELECT file_path, COUNT(*) as cnt FROM media_usage WHERE file_path LIKE '%.mp4' OR file_path LIKE '%.mov' GROUP BY file_path"):
+        usage[row["file_path"]] = row["cnt"]
+
+    # Sort: least used first, then shuffle among ties for variety
+    source_videos.sort(key=lambda p: (usage.get(str(p), 0), random.random()))
+    return source_videos[0]
+
+
+def select_background_video(duration: float) -> str | None:
+    """Select a background video from source videos (least-used first) and prepare it."""
+    video_file = _get_least_used_video()
+    if not video_file:
         log.error("No source videos found in %s", SOURCE_VIDEOS)
         return None
 
-    video_file = random.choice(source_videos)
+    # Record usage so this video won't be picked next time
+    from db import record_media_usage
+    record_media_usage(str(video_file), 0)
+
     log.info("Selected background video: %s", video_file)
 
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)

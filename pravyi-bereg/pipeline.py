@@ -9,7 +9,7 @@ from db import (
     execute_insert, execute, get_queue_item, get_least_used_photo,
     record_media_usage,
 )
-from content.generator import generate_post, generate_post_title, generate_reel_script
+from content.generator import generate_post, generate_post_title, generate_reel_script, generate_reel_caption
 from content.topics import get_next_topic
 from content.validator import validate_post
 from media.photo_overlay import create_post_cover
@@ -145,8 +145,9 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     log.info("[Reel] Step 4/5: Building composite video...")
     from media.video_builder import build_composite_reel
 
-    # Use first source video as background audio source (ambient sound at 10%)
-    bg_audio_source = str(videos[0]) if videos else None
+    # Use a random source video for ambient background audio (10% volume)
+    import random as _rng
+    bg_audio_source = str(_rng.choice(videos)) if videos else None
 
     video_path = build_composite_reel(
         tts_audio_path=audio_path,
@@ -159,14 +160,19 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     if not video_path:
         return {"error": "Video assembly failed"}
 
-    # 5. Add to queue
-    log.info("[Reel] Step 5/5: Adding to approval queue...")
+    # 5. Generate short CTA caption (not the voiceover text)
+    log.info("[Reel] Step 5/6: Generating caption...")
+    caption = await generate_reel_caption(topic)
+    log.info("[Reel] Caption: %s", caption)
+
+    # 6. Add to queue
+    log.info("[Reel] Step 6/6: Adding to approval queue...")
     queue_id = execute_insert(
         """INSERT INTO content_queue
            (post_type, topic, format, hook, text_content, content_hash,
             media_ids, status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
-        ("reel", topic, category, topic[:100], voiceover_text, "",
+        ("reel", topic, category, topic[:100], caption, "",
          video_path, datetime.now().isoformat()),
     )
 
@@ -175,7 +181,7 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     return {
         "queue_id": queue_id,
         "topic": topic,
-        "text": voiceover_text,
+        "text": caption,
         "video_path": video_path,
         "post_type": "reel",
     }
