@@ -30,22 +30,26 @@ async def generate_and_queue_post(
     Returns:
         {'queue_id': int, 'topic': str, ...} or {'error': str}
     """
-    if force_topic:
-        topic = force_topic
-        category = "manual"
-    else:
-        topic_info = get_next_topic(post_type)
-        topic = topic_info["topic"]
-        category = topic_info["category"]
+    try:
+        if force_topic:
+            topic = force_topic
+            category = "manual"
+        else:
+            topic_info = get_next_topic(post_type)
+            topic = topic_info["topic"]
+            category = topic_info["category"]
 
-    log.info("Generating %s on topic: %s", post_type, topic)
+        log.info("Generating %s on topic: %s", post_type, topic)
 
-    if post_type == "post":
-        return await _generate_post_pipeline(topic, category)
-    elif post_type == "reel":
-        return await _generate_reel_pipeline(topic, category)
-    else:
-        return {"error": f"Unknown post type: {post_type}"}
+        if post_type == "post":
+            return await _generate_post_pipeline(topic, category)
+        elif post_type == "reel":
+            return await _generate_reel_pipeline(topic, category)
+        else:
+            return {"error": f"Unknown post type: {post_type}"}
+    except Exception as e:
+        log.error("Pipeline error for %s: %s", post_type, e, exc_info=True)
+        return {"error": f"Pipeline {post_type}: {e}"}
 
 
 async def _generate_post_pipeline(topic: str, category: str) -> dict:
@@ -123,9 +127,12 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     log.info("[Reel] Step 2/5: Generating TTS with timestamps...")
     from tts.voice import generate_tts_with_timestamps
 
-    audio_path, word_timestamps = await generate_tts_with_timestamps(voiceover_text)
+    try:
+        audio_path, word_timestamps = await generate_tts_with_timestamps(voiceover_text)
+    except Exception as e:
+        return {"error": f"ElevenLabs TTS failed: {e}"}
     if not audio_path:
-        return {"error": "TTS generation failed"}
+        return {"error": "TTS generation failed (ElevenLabs)"}
 
     log.info("[Reel] TTS: %s, %d word timestamps", audio_path, len(word_timestamps))
 
@@ -133,11 +140,14 @@ async def _generate_reel_pipeline(topic: str, category: str) -> dict:
     log.info("[Reel] Step 3/5: Generating lip-sync avatar (RunPod)...")
     from media.runpod_lipsync import generate_lipsync_video
 
-    lipsync_path = await asyncio.to_thread(
-        generate_lipsync_video, audio_path, AVATAR_IMAGE_PATH or None
-    )
+    try:
+        lipsync_path = await asyncio.to_thread(
+            generate_lipsync_video, audio_path, AVATAR_IMAGE_PATH or None
+        )
+    except Exception as e:
+        return {"error": f"RunPod lip-sync failed: {e}"}
     if not lipsync_path:
-        return {"error": "Lip-sync generation failed (RunPod)"}
+        return {"error": "RunPod lip-sync failed: no output video"}
 
     log.info("[Reel] Lip-sync video: %s", lipsync_path)
 

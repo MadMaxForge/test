@@ -120,18 +120,32 @@ async def _scheduled_generate(post_type: str):
             error = result.get("error", "Unknown") if result else "Generation failed"
             log.error("Scheduled generation failed: %s", error)
             
-            # Notify owner about failure
+            # Notify owner about failure with detailed error analysis
             if _bot_app and _bot_app.bot:
-                from config import TG_OWNER_CHAT_ID
                 try:
-                    await _bot_app.bot.send_message(
-                        chat_id=TG_OWNER_CHAT_ID,
-                        text=f"⚠️ Ошибка генерации {post_type}: {error}",
+                    from bot.handlers import notify_owner_error, _classify_error
+                    error_detail = _classify_error(error)
+                    await notify_owner_error(
+                        _bot_app.bot,
+                        f"Плановая генерация {post_type}",
+                        error_detail,
                     )
                 except Exception:
                     pass
     except Exception as e:
         log.error("Scheduled generation exception: %s", e, exc_info=True)
+        # Notify owner about unexpected exception
+        if _bot_app and _bot_app.bot:
+            try:
+                from bot.handlers import notify_owner_error, _classify_error
+                error_detail = _classify_error(str(e))
+                await notify_owner_error(
+                    _bot_app.bot,
+                    f"Плановая генерация {post_type} (исключение)",
+                    error_detail,
+                )
+            except Exception:
+                pass
 
 
 async def _scheduled_parse_competitors():
@@ -165,6 +179,16 @@ async def _scheduled_parse_competitors():
                 pass
     except Exception as e:
         log.error("Competitor parsing exception: %s", e, exc_info=True)
+        if _bot_app and _bot_app.bot:
+            try:
+                from bot.handlers import notify_owner_error
+                await notify_owner_error(
+                    _bot_app.bot,
+                    "Парсинг конкурентов",
+                    str(e),
+                )
+            except Exception:
+                pass
 
 
 def list_scheduled_jobs() -> list[dict]:

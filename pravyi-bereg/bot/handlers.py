@@ -5,9 +5,10 @@ import logging
 import os
 import shutil
 import time
+import traceback
 from pathlib import Path
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
@@ -24,6 +25,17 @@ REJECT_PREFIX = "reject_"
 REGENERATE_PREFIX = "regen_"
 
 
+# Persistent menu keyboard
+MAIN_MENU = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("\U0001f4dd Пост"), KeyboardButton("\U0001f3ac Рилс")],
+        [KeyboardButton("\U0001f4c5 Расписание"), KeyboardButton("\U0001f4ca Статус")],
+        [KeyboardButton("\u2753 Помощь")],
+    ],
+    resize_keyboard=True,
+)
+
+
 def build_bot_app() -> Application:
     """Build and configure the Telegram bot application."""
     app = Application.builder().token(TG_BOT_TOKEN).build()
@@ -36,9 +48,16 @@ def build_bot_app() -> Application:
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("generate", cmd_generate))
     app.add_handler(CommandHandler("topics", cmd_topics))
+    app.add_handler(CommandHandler("schedule", cmd_schedule))
 
     # Callback query handler (approve/reject buttons)
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Text-button handler (persistent menu buttons)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_text_button,
+    ))
 
     # Media upload handler (photos and videos from owner)
     app.add_handler(MessageHandler(
@@ -52,6 +71,58 @@ def build_bot_app() -> Application:
 def _is_owner(user_id: int) -> bool:
     """Check if the user is the bot owner."""
     return user_id == TG_OWNER_CHAT_ID
+
+
+async def notify_owner_error(bot, error_context: str, error_detail: str):
+    """Send error notification to the bot owner via Telegram."""
+    try:
+        detail = error_detail[:1500] if len(error_detail) > 1500 else error_detail
+        await bot.send_message(
+            chat_id=TG_OWNER_CHAT_ID,
+            text=(
+                "\u26a0\ufe0f *\u041e\u0448\u0438\u0431\u043a\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438*\n\n"
+                f"\U0001f4cd {error_context}\n\n"
+                f"\u274c *\u041f\u0440\u0438\u0447\u0438\u043d\u0430:*\n\`{detail}\`\n\n"
+                "\U0001f504 \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 /generate \u0434\u043b\u044f \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e\u0439 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        log.error("Failed to send error notification: %s", e)
+
+
+def _classify_error(error_text: str) -> str:
+    """Classify error into a user-friendly description with cause analysis."""
+    err = error_text.lower()
+    if "runpod" in err or "lip-sync" in err or "lipsync" in err:
+        if "balance" in err or "insufficient" in err or "credits" in err:
+            return "\U0001f4b0 RunPod: \u043d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u0441\u0440\u0435\u0434\u0441\u0442\u0432. \u041f\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435 RunPod."
+        if "timeout" in err or "timed out" in err:
+            return "\u23f0 RunPod: \u0442\u0430\u0439\u043c\u0430\u0443\u0442 lip-sync (>30 \u043c\u0438\u043d). GPU \u043f\u0435\u0440\u0435\u0433\u0440\u0443\u0436\u0435\u043d."
+        if "failed" in err:
+            return "\U0001f6a8 RunPod: \u043e\u0448\u0438\u0431\u043a\u0430 lip-sync. \u041f\u0440\u043e\u0431\u043b\u0435\u043c\u0430 GPU/\u043c\u043e\u0434\u0435\u043b\u044c."
+        return f"\U0001f916 RunPod (lip-sync): {error_text}"
+    if "elevenlabs" in err or "tts" in err:
+        if "quota" in err or "limit" in err or "exceeded" in err:
+            return "\U0001f50a ElevenLabs: \u043b\u0438\u043c\u0438\u0442 \u0441\u0438\u043c\u0432\u043e\u043b\u043e\u0432 \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d."
+        if "key" in err or "auth" in err or "permission" in err:
+            return "\U0001f511 ElevenLabs: \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0430 \u0441 API-\u043a\u043b\u044e\u0447\u043e\u043c."
+        return f"\U0001f3a4 ElevenLabs (TTS): {error_text}"
+    if "openrouter" in err or "gemini" in err:
+        if "rate" in err or "limit" in err:
+            return "\U0001f9e0 AI: \u043f\u0440\u0435\u0432\u044b\u0448\u0435\u043d \u043b\u0438\u043c\u0438\u0442 OpenRouter."
+        if "key" in err or "auth" in err:
+            return "\U0001f511 OpenRouter: \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0430 \u0441 API-\u043a\u043b\u044e\u0447\u043e\u043c."
+        return f"\U0001f9e0 AI (OpenRouter): {error_text}"
+    if "vk" in err:
+        if "token" in err or "auth" in err:
+            return "\U0001f511 VK: \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0430 \u0441 \u0442\u043e\u043a\u0435\u043d\u043e\u043c."
+        return f"\U0001f4e2 VK API: {error_text}"
+    if "ffmpeg" in err:
+        return f"\U0001f3ac FFmpeg: {error_text}"
+    if "no source videos" in err:
+        return "\U0001f3a5 \u041d\u0435\u0442 \u0438\u0441\u0445\u043e\u0434\u043d\u044b\u0445 \u0432\u0438\u0434\u0435\u043e. \u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 \u0431\u043e\u0442\u0430."
+    return f"\u2753 {error_text}"
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,6 +142,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — помощь\n\n"
         "📸 Отправьте фото/видео — они будут сохранены как исходники для контента.",
         parse_mode="Markdown",
+        reply_markup=MAIN_MENU,
     )
 
 
@@ -91,6 +163,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "они будут сохранены как исходники для будущих постов.\n\n"
         "🔄 /generate — создать пост вручную прямо сейчас",
         parse_mode="Markdown",
+        reply_markup=MAIN_MENU,
     )
 
 
