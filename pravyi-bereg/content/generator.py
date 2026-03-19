@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -15,6 +16,35 @@ from config import (
 )
 
 log = logging.getLogger(__name__)
+
+# Regex to strip all emoji / pictographic characters
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002702-\U000027B0"  # dingbats
+    "\U0000FE00-\U0000FE0F"  # variation selectors
+    "\U0000200D"             # ZWJ
+    "\U000024C2-\U0001F251"
+    "\U0001F900-\U0001F9FF"  # supplemental symbols
+    "\U0001FA00-\U0001FA6F"  # chess symbols
+    "\U0001FA70-\U0001FAFF"  # symbols extended-A
+    "\U00002600-\U000026FF"  # misc symbols
+    "\U0000203C-\U00003299"  # misc
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    """Remove all emoji characters from text and clean up extra spaces."""
+    cleaned = _EMOJI_RE.sub("", text)
+    # Collapse multiple spaces into one
+    cleaned = re.sub(r"  +", " ", cleaned).strip()
+    return cleaned
+
 
 SYSTEM_PROMPT = f"""Ты — копирайтер для VK-сообщества "{BRAND_NAME}".
 Направление: недвижимость, земельные участки, загородные дома.
@@ -148,6 +178,7 @@ async def generate_reel_script(topic: str) -> dict[str, Any]:
 - Без сложных терминов
 - Конкретика без выдуманных цифр
 - НЕ пиши длиннее {max_words} слов — видео должно быть коротким!
+- БЕЗ ЭМОДЗИ в тексте озвучки! Текст будет использоваться для субтитров и TTS
 
 Формат ответа:
 ОЗВУЧКА:
@@ -187,6 +218,9 @@ async def generate_reel_script(topic: str) -> dict[str, Any]:
 
     if not voiceover:
         return {"error": "Could not parse voiceover text"}
+
+    # Strip any emojis that AI may have added — they render as blank squares in subtitles
+    voiceover = strip_emojis(voiceover)
 
     return {
         "voiceover_text": voiceover,
