@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from calendar_bot.config import Config
 from calendar_bot.database import Database
@@ -29,9 +30,12 @@ db = Database(config.db_path)
 calendar_api = CalendarAPI(config.google_script_url, config.google_script_token)
 llm = LLMService(config.openrouter_api_key, config.llm_model)
 scheduler: ReminderScheduler | None = None
+bot_enabled: bool = True
 
 
 async def send_message_to_user(chat_id: int, text: str) -> None:
+    if not bot_enabled:
+        return
     try:
         await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -42,6 +46,85 @@ def is_owner(message: types.Message) -> bool:
     if config.owner_chat_id == 0:
         return True
     return message.chat.id == config.owner_chat_id
+
+
+@dp.message(Command("on"))
+async def cmd_on(message: types.Message) -> None:
+    if not is_owner(message):
+        return
+    global bot_enabled
+    bot_enabled = True
+    await db.set_setting("bot_enabled", "1")
+    if scheduler:
+        scheduler.enabled = True
+    logger.info("Bot ENABLED by owner")
+    await message.answer(
+        "\u2705 <b>\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0438\u043a \u0432\u043a\u043b\u044e\u0447\u0451\u043d!</b>\n\n"
+        "\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439, \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f \u0438 \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u044b \u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@dp.message(Command("off"))
+async def cmd_off(message: types.Message) -> None:
+    if not is_owner(message):
+        return
+    global bot_enabled
+    bot_enabled = False
+    await db.set_setting("bot_enabled", "0")
+    if scheduler:
+        scheduler.enabled = False
+    logger.info("Bot DISABLED by owner")
+    await message.answer(
+        "\u23f8 <b>\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0438\u043a \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.</b>\n\n"
+        "\u0422\u043e\u043a\u0435\u043d\u044b \u043d\u0435 \u0442\u0440\u0430\u0442\u044f\u0442\u0441\u044f. \u041d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f \u0438 \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u044b \u043e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u044b.\n"
+        "\u0427\u0442\u043e\u0431\u044b \u0432\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u043e\u0431\u0440\u0430\u0442\u043d\u043e \u2014 /on",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@dp.callback_query(F.data == "bot_on")
+async def callback_on(callback: types.CallbackQuery) -> None:
+    if config.owner_chat_id != 0 and callback.message and callback.message.chat.id != config.owner_chat_id:
+        return
+    global bot_enabled
+    bot_enabled = True
+    await db.set_setting("bot_enabled", "1")
+    if scheduler:
+        scheduler.enabled = True
+    logger.info("Bot ENABLED via button")
+    if callback.message:
+        await callback.message.edit_text(
+            "\u2705 <b>\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0438\u043a \u0432\u043a\u043b\u044e\u0447\u0451\u043d!</b>\n\n"
+            "\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439, \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f \u0438 \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u044b \u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="\u23f8 \u0412\u044b\u043a\u043b\u044e\u0447\u0438\u0442\u044c", callback_data="bot_off")]
+            ]),
+        )
+    await callback.answer("\u0412\u043a\u043b\u044e\u0447\u0435\u043d\u043e!")
+
+
+@dp.callback_query(F.data == "bot_off")
+async def callback_off(callback: types.CallbackQuery) -> None:
+    if config.owner_chat_id != 0 and callback.message and callback.message.chat.id != config.owner_chat_id:
+        return
+    global bot_enabled
+    bot_enabled = False
+    await db.set_setting("bot_enabled", "0")
+    if scheduler:
+        scheduler.enabled = False
+    logger.info("Bot DISABLED via button")
+    if callback.message:
+        await callback.message.edit_text(
+            "\u23f8 <b>\u041a\u0430\u043b\u0435\u043d\u0434\u0430\u0440\u0438\u043a \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.</b>\n\n"
+            "\u0422\u043e\u043a\u0435\u043d\u044b \u043d\u0435 \u0442\u0440\u0430\u0442\u044f\u0442\u0441\u044f. \u041d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u044f \u0438 \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u044b \u043e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u044b.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="\u2705 \u0412\u043a\u043b\u044e\u0447\u0438\u0442\u044c", callback_data="bot_on")]
+            ]),
+        )
+    await callback.answer("\u0412\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e!")
 
 
 @dp.message(Command("start"))
@@ -122,14 +205,18 @@ async def cmd_overdue(message: types.Message) -> None:
 async def cmd_help(message: types.Message) -> None:
     if not is_owner(message):
         return
+    status = "✅ Включён" if bot_enabled else "⏸ Выключен"
     await message.answer(
-        "📖 <b>Команды:</b>\n\n"
+        f"📖 <b>Команды:</b>\n\n"
         "/today — расписание на сегодня\n"
         "/tomorrow — расписание на завтра\n"
         "/week — расписание на неделю\n"
         "/free — свободные слоты на сегодня\n"
         "/overdue — просроченные задачи\n"
+        "/on — включить бота\n"
+        "/off — выключить бота (токены не тратятся)\n"
         "/help — эта справка\n\n"
+        f"Статус: {status}\n\n"
         "Или просто пиши обычным текстом!",
         parse_mode=ParseMode.HTML,
     )
@@ -139,6 +226,15 @@ async def cmd_help(message: types.Message) -> None:
 async def on_message(message: types.Message) -> None:
     if not is_owner(message):
         await message.answer("⛔ Этот бот приватный.")
+        return
+
+    if not bot_enabled:
+        await message.answer(
+            "⏸ Календарик сейчас выключен. Нажми кнопку ниже или /on чтобы включить.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Включить", callback_data="bot_on")]
+            ]),
+        )
         return
 
     text = message.text
@@ -220,6 +316,13 @@ async def main() -> None:
         if saved_owner:
             config.owner_chat_id = int(saved_owner)
             logger.info("Restored owner chat ID: %d", config.owner_chat_id)
+
+    # Restore bot_enabled state from DB
+    global bot_enabled
+    saved_enabled = await db.get_setting("bot_enabled")
+    if saved_enabled is not None:
+        bot_enabled = saved_enabled == "1"
+        logger.info("Restored bot_enabled: %s", bot_enabled)
 
     global scheduler
     scheduler = ReminderScheduler(config, calendar_api, db, send_message_to_user)

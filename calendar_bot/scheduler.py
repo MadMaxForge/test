@@ -27,6 +27,7 @@ class ReminderScheduler:
         self.send_message = send_message_func
         self.tz = ZoneInfo(config.timezone)
         self.scheduler = AsyncIOScheduler(timezone=config.timezone)
+        self.enabled: bool = True
 
     def start(self) -> None:
         # Check for upcoming events periodically
@@ -89,7 +90,7 @@ class ReminderScheduler:
         logger.info("Scheduler stopped")
 
     async def _check_reminders(self) -> None:
-        if self.config.owner_chat_id == 0:
+        if not self.enabled or self.config.owner_chat_id == 0:
             return
 
         try:
@@ -136,7 +137,7 @@ class ReminderScheduler:
             logger.error("Reminder check error: %s", e)
 
     async def _send_daily_digest(self) -> None:
-        if self.config.owner_chat_id == 0:
+        if not self.enabled or self.config.owner_chat_id == 0:
             return
 
         try:
@@ -222,7 +223,7 @@ class ReminderScheduler:
             logger.error("Daily digest error: %s", e)
 
     async def _check_overdue(self) -> None:
-        if self.config.owner_chat_id == 0:
+        if not self.enabled or self.config.owner_chat_id == 0:
             return
 
         try:
@@ -277,7 +278,7 @@ class ReminderScheduler:
             logger.error("Overdue check error: %s", e)
 
     async def _send_evening_report(self) -> None:
-        if self.config.owner_chat_id == 0:
+        if not self.enabled or self.config.owner_chat_id == 0:
             return
 
         try:
