@@ -1,0 +1,19 @@
+# Environment
+.env
+__pycache__/
+*.pyc
+
+# Generated content
+media/generated/
+media/source/photos/
+media/source/videos/
+media/music/
+media/templates/fonts/
+
+# Data
+data/
+logs/
+
+# IDE
+.vscode/
+.idea/

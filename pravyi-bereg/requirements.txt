@@ -1,0 +1,8 @@
+python-telegram-bot==21.3
+aiohttp==3.9.5
+Pillow==10.3.0
+APScheduler==3.10.4
+edge-tts==6.1.12
+python-dotenv==1.0.1
+openai==1.35.3
+aiosqlite==0.20.0
