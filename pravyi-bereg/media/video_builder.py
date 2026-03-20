@@ -295,7 +295,9 @@ def build_composite_reel(
         cmd.extend([
             "-filter_complex", ";".join(filter_parts),
             "-map", "0:v", "-map", "[aout]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
+            "-pix_fmt", "yuv420p", "-b:v", VIDEO_BITRATE,
+            "-c:a", "aac", "-b:a", "128k",
             "-t", str(target_duration),
             "-movflags", "+faststart",
             output_path,
